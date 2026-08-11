@@ -13,5 +13,18 @@ public class RightField : BaseballPlayer
     {
         base.update();
     }
+
+    public override bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    {
+        // 중견수나 1루수가 타구를 쫓을 때 백업
+        if (chaser.Type == PLAYER_TYPE.E_CENTER_FIELD || chaser.Type == PLAYER_TYPE.E_FIRST_BASE)
+        {
+            DefRole = DEFENSIVE_ROLE.BACKUP;
+            Vector3 backupDir = (chaser.transform.position - BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_HOME_BASE)).normalized;
+            RoleTargetPosition = chaser.transform.position + backupDir * 7f; // 7m 뒤에서 백업
+            return true;
+        }
+        return false;
+    }
 }
 

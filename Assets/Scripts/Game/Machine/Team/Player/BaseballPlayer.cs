@@ -24,9 +24,36 @@ public enum BASE_TYPE
     E_HOME_BASE,
 }
 
+public enum DEFENSIVE_ROLE
+{
+    IDLE,
+    CHASER,
+    BACKUP,
+    BASE_COVER,
+    CUTOFF
+}
+
 public class BaseballPlayer : MonoBehaviour
 {
     protected PLAYER_TYPE _type;
+    public PLAYER_TYPE Type => _type;
+    
+    public DEFENSIVE_ROLE DefRole = DEFENSIVE_ROLE.IDLE;
+    public Vector3 RoleTargetPosition = Vector3.zero;
+
+    public Team MyTeam { get; private set; }
+    public Rigidbody Rig { get; private set; }
+
+    // 포지션별 고유 특수 역할(베이스 커버 등)을 스스로 결정하기 위한 가상 메서드
+    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    {
+        return false;
+    }
+
+    public void SetPlayerType(PLAYER_TYPE type)
+    {
+        _type = type;
+    }
 
     protected Ball _ball;
 
@@ -65,6 +92,14 @@ public class BaseballPlayer : MonoBehaviour
         _initPos = transform.position;
         _moveSpeed = 4f;
         _ball = _ball != null ? _ball : null;
+        
+        // 최적화를 위한 컴포넌트 캐싱
+        if (transform.parent != null)
+        {
+            MyTeam = transform.parent.GetComponent<Team>();
+        }
+        Rig = GetComponent<Rigidbody>();
+
         _role.init(_height, transform.GetChild(0).GetChild(1).GetChild(0), _type, _ball, transform, bT);
         setRoleController();
     }
@@ -115,6 +150,23 @@ public class BaseballPlayer : MonoBehaviour
     public void ExitGame()
     {
         gameObject.SetActive(false);
+    }
+
+    public void ResetPosition()
+    {
+        DefRole = DEFENSIVE_ROLE.IDLE;
+        RoleTargetPosition = Vector3.zero;
+        transform.position = _initPos;
+        
+        if (Rig != null)
+        {
+            Rig.linearVelocity = Vector3.zero;
+        }
+
+        if (_role != null)
+        {
+            _role.ResetRole();
+        }
     }
 
     void focusBall(Ball ball, PlayerRole role)

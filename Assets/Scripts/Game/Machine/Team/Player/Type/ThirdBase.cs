@@ -12,4 +12,12 @@ public class ThirdBase : BaseballPlayer
     {
         base.update();
     }
+
+    public override bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    {
+        // 3루수는 자기가 타구를 쫓는 게 아니라면 3루 베이스 커버
+        DefRole = DEFENSIVE_ROLE.BASE_COVER;
+        RoleTargetPosition = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_THIRD_BASE);
+        return true;
+    }
 }

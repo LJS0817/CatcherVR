@@ -34,36 +34,64 @@ public class CountsProvider : MonoBehaviour
         if (_provider != null && _provider == this) Destroy(this.gameObject);
         else _provider = this;
 
-        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_BALL) + "-" + GetCount(COUNT_TYPE.E_STRIKE) + "</b>");
+        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_STRIKE) + "-" + GetCount(COUNT_TYPE.E_BALL) + "</b>");
     }
 
     public byte GetCount(COUNT_TYPE t) { return _counts[(byte)t]; }
     
-    public void IncreaseCount(COUNT_TYPE t, ClippingEvent e) { setCount(t, (byte)(GetCount(t) + 1), e); }
+    public void IncreaseCount(COUNT_TYPE t, ClippingEvent e) 
+    { 
+        if (t == COUNT_TYPE.E_FOUL)
+        {
+            if (GetCount(COUNT_TYPE.E_STRIKE) < 2)
+            {
+                setCount(COUNT_TYPE.E_STRIKE, (byte)(GetCount(COUNT_TYPE.E_STRIKE) + 1), e);
+            }
+            return;
+        }
+        setCount(t, (byte)(GetCount(t) + 1), e); 
+    }
 
     void setCount(COUNT_TYPE t, byte v, ClippingEvent e)
     {
-        if (t == COUNT_TYPE.E_FOUL) {
-            if(GetCount(COUNT_TYPE.E_STRIKE) > 2) return;
-            else t = COUNT_TYPE.E_STRIKE;
-        }
+        if (t == COUNT_TYPE.E_FOUL) return; // Should not reach here, but just in case
         _counts[(int)t] = v;
         ClippingCount(t, e);
         if (e != null) e();
-        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_BALL) + "-" + GetCount(COUNT_TYPE.E_STRIKE) + "</b>");
+        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_STRIKE) + "-" + GetCount(COUNT_TYPE.E_BALL) + "</b>");
+    }
+
+    public void ResetAtBatCounts()
+    {
+        setCount(COUNT_TYPE.E_BALL, 0, null);
+        setCount(COUNT_TYPE.E_STRIKE, 0, null);
+    }
+
+    public void ResetInningCounts()
+    {
+        ResetAtBatCounts();
+        setCount(COUNT_TYPE.E_OUT, 0, null);
     }
 
     public void ClippingCount(COUNT_TYPE t, ClippingEvent e)
     {
-        if (t == COUNT_TYPE.E_BALL && GetCount(t) > 4) {
-            setCount(t, 0, null);
+        if (t == COUNT_TYPE.E_BALL && GetCount(t) > 3) {
+            // 4 Balls = Walk
+            ResetAtBatCounts();
+            if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.Walk();
         }
-        else if (GetCount(t) > 3)
+        else if (t == COUNT_TYPE.E_STRIKE && GetCount(t) > 2)
         {
-            setCount(t, 0, null);
-            if (t == COUNT_TYPE.E_STRIKE) { 
-                IncreaseCount(COUNT_TYPE.E_OUT, null);
-            }
+            // 3 Strikes = Strikeout
+            ResetAtBatCounts();
+            IncreaseCount(COUNT_TYPE.E_OUT, null);
+            if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.Strikeout();
+        }
+        else if (t == COUNT_TYPE.E_OUT && GetCount(t) > 2)
+        {
+            // 3 Outs = Inning Change
+            ResetInningCounts();
+            if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.ChangeInning();
         }
     }
 

@@ -12,4 +12,16 @@ public class ShortStop : BaseballPlayer
     {
         base.update();
     }
+
+    public override bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    {
+        // 2루수가 타구를 쫓으러 갔다면 유격수가 2루를 커버
+        if (chaser.Type == PLAYER_TYPE.E_SECOND_BASE)
+        {
+            DefRole = DEFENSIVE_ROLE.BASE_COVER;
+            RoleTargetPosition = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_SECOND_BASE);
+            return true;
+        }
+        return false;
+    }
 }

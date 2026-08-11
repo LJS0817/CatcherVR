@@ -8,15 +8,16 @@ public class PlayerRole
     protected PLAYER_TYPE _type;
     
     /// <summary>
-    /// ¿òÁ÷ÀÓ ¾øÀÌ ÀâÀ» ¼ö ÀÖ´Â ¹üÀ§
-    /// x - ÁÂ¿ì
-    /// y - Á¡ÇÁ ½Ã
-    /// z - ¿òÁ÷ÀÓ ¹üÀ§
+    /// ì›€ì§ì„ ì—†ì´ ì¡ì„ ìˆ˜ ìˆëŠ” ë²”ìœ„
+    /// x - ì¢Œìš°
+    /// y - ì í”„ ì‹œ
+    /// z - ì›€ì§ì„ ë²”ìœ„
     /// </summary>
     protected Vector3 _range;
 
     protected Ball _ball;
     protected Transform _my;
+    protected BaseballPlayer _bp; // ìµœì í™”ë¥¼ ìœ„í•´ ìƒìœ„ ì»¨íŠ¸ë¡¤ëŸ¬ë¥¼ ìºì‹±
 
     protected Transform _item;
 
@@ -30,16 +31,20 @@ public class PlayerRole
     protected RoleController _controller;
 
     public virtual void init(float h, Transform tool, PLAYER_TYPE t, Ball ball, Transform player, BASE_TYPE bT=BASE_TYPE.E_SELF) {
-        _ball = ball;
-        _my = player;
+        _range = new Vector3(h, 4f, h);
         _base = bT;
         _type = t;
-
-        _ani = player.GetComponent<Animator>();
-
-        _offsets = player.GetChild(0).GetChild(1).GetChild(2);
+        _my = player;
+        
+        if (_my != null)
+        {
+            _ani = _my.GetComponent<Animator>();
+            _bp = _my.GetComponent<BaseballPlayer>();
+            _offsets = _my.GetChild(0).GetChild(1).GetChild(2);
+        }
 
         _item = tool;
+        _ball = ball;
         
         _item.GetChild(0).gameObject.SetActive(false);
         if(_item.childCount > 1) _item.GetChild(1).gameObject.SetActive(false);
@@ -93,6 +98,18 @@ public class PlayerRole
     public virtual void Increase(int i) { }
 
     public virtual void SetController(Transform pool, Transform point, Transform target, float speed=0f) { }
+
+    public virtual void ResetRole()
+    {
+        if (_movement != null)
+        {
+            _movement.SetMovementType(MOVEMENT_TYPE.E_STAY);
+        }
+        if (_item != null)
+        {
+            _item.localPosition = Vector3.zero;
+        }
+    }
 
     public virtual RoleController GetController() { return _controller; }
 

@@ -41,6 +41,15 @@ public class Glove : MonoBehaviour
         if(other.name.Contains("ball"))
         {
             _ball = other.GetComponent<Ball>();
+            
+            // 플레이어가 노바운드로 잡으면 아웃 처리 (플라이 아웃 / 파울 플라이 아웃)
+            if (_ball.CanBeDirectOut() && _ball._isBattedBall)
+            {
+                _ball.IsFoul = false; // 파울 플라이 아웃이면 데드볼 처리 취소
+                CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, null);
+                GamePlayerProvider.provider.PlayerOut(PLAYER_TYPE.E_PITCHER); // 현재 타자 아웃
+            }
+            
             _ball.GrabBall(BallOffset);
         }
     }

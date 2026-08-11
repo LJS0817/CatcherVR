@@ -1,30 +1,37 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
+using DG.Tweening;
 
 public class BasePositionProvider : MonoBehaviour
 {
     //Base State == Transform.name
     // *     *
-    //¼öºñ  °ø°İ
+    //ìˆ˜ë¹„  ê³µê²©
     // ex)
-    // 1_  ->  1·ç¼ö°¡ ¼öºñ Áß, °ø°İÀÚ ¾øÀ½
-    // 10  ->  1·ç¼ö°¡ ¼öºñ Áß, °ø°İÀÚ °¡´Â Áß
-    // 11  ->  1·ç¼ö°¡ ¼öºñ Áß, °ø°İÀÚ µµÂø
-    // 12  ->  1·ç¼ö°¡ ¼öºñ Áß, °ø°İÀÚ°¡ ÀÖÁö¸¸ º£ÀÌ½º¿¡´Â ¾øÀ½
-    // 3_  ->  3·ç¼ö°¡ ¼öºñ Áß, °ø°İÀÚ ¾øÀ½
-    // _0  ->  ¼öºñ¼ö ¾øÀ½, °ø°İÀÚ °¡´Â Áß
+    // 1_  ->  1ë£¨ìˆ˜ê°€ ìˆ˜ë¹„ ì¤‘, ê³µê²©ì ì—†ìŒ
+    // 10  ->  1ë£¨ìˆ˜ê°€ ìˆ˜ë¹„ ì¤‘, ê³µê²©ì ê°€ëŠ” ì¤‘
+    // 11  ->  1ë£¨ìˆ˜ê°€ ìˆ˜ë¹„ ì¤‘, ê³µê²©ì ë„ì°©
+    // 12  ->  1ë£¨ìˆ˜ê°€ ìˆ˜ë¹„ ì¤‘, ê³µê²©ìê°€ ìˆì§€ë§Œ ë² ì´ìŠ¤ì—ëŠ” ì—†ìŒ
+    // 3_  ->  3ë£¨ìˆ˜ê°€ ìˆ˜ë¹„ ì¤‘, ê³µê²©ì ì—†ìŒ
+    // _0  ->  ìˆ˜ë¹„ìˆ˜ ì—†ìŒ, ê³µê²©ì ê°€ëŠ” ì¤‘
 
     // _, 0, 1, 2, 3, 4, 8
-    // _ -> ¾øÀ½
-    // 0 -> Æ÷¼ö
-    // 1 -> 1·ç¼ö
-    // 2 -> 2·ç¼ö
-    // 3 -> À¯°İ¼ö
-    // 4 -> 3·ç¼ö
-    // 8 -> Åõ¼ö
+    // _ -> ì—†ìŒ
+    // 0 -> í¬ìˆ˜
+    // 1 -> 1ë£¨ìˆ˜
+    // 2 -> 2ë£¨ìˆ˜
+    // 3 -> ìœ ê²©ìˆ˜
+    // 4 -> 3ë£¨ìˆ˜
+    // 8 -> íˆ¬ìˆ˜
     public List<Transform> Bases;
     public List<Animator> BaseAnimators;
     public Transform HitterBox;
+
+    [Header("Base UI Images")]
+    public Image ImageFirst;
+    public Image ImageSecond;
+    public Image ImageThird;
 
     private static BasePositionProvider _provider;
 
@@ -82,11 +89,20 @@ public class BasePositionProvider : MonoBehaviour
     public char GetAttckerBaseState(BASE_TYPE idx) { return getBaseState(idx)[1]; }
     public char GetDefencerBaseState(BASE_TYPE idx) { return getBaseState(idx)[0]; }
 
+    public PLAYER_TYPE GetAttackerPlayerType(char playerState)
+    {
+        if (playerState == DEFAULT_CHAR) return PLAYER_TYPE.E_PITCHER; // Default to pitcher (wildcard for current batter)
+        int val = playerState - '0';
+        if (val >= 20) return (PLAYER_TYPE)(val - 20);
+        if (val >= 10) return (PLAYER_TYPE)(val - 10);
+        return (PLAYER_TYPE)val;
+    }
+
     /// <summary>
-    /// <para>-1  ->  °ø°İÀÚ ¾øÀ½</para>
-    /// <para>Player Type + 0  ->  °ø°İÀÚ µµÂø</para>
-    /// <para>Player Type + 10  ->  °ø°İÀÚ °¡´Â Áß</para>
-    /// <para>Player Type + 20  ->  °ø°İÀÚ ¶³¾îÁ®ÀÖÀ½</para>
+    /// <para>-1  ->  ê³µê²©ì ì—†ìŒ</para>
+    /// <para>Player Type + 0  ->  ê³µê²©ì ë„ì°©</para>
+    /// <para>Player Type + 10  ->  ê³µê²©ì ê°€ëŠ” ì¤‘</para>
+    /// <para>Player Type + 20  ->  ê³µê²©ì ë–¨ì–´ì ¸ìˆìŒ</para>
     /// </summary>
     /// <param name="idx"></param>
     /// <param name="state"></param>
@@ -94,40 +110,161 @@ public class BasePositionProvider : MonoBehaviour
     {
         setBaseState(idx, getBaseState(idx)[0], getState(state));
         if (idx > BASE_TYPE.E_BALL && idx < BASE_TYPE.E_HOME_BASE) BaseAnimators[(int)(idx - BASE_TYPE.E_FIRST_BASE)].SetBool("Changed", state > -1 && state < 10);
-        //int index = getIndex(idx);
-        //Bases[index].name = Bases[index].name[0] + getState(state);
+        
+        UpdateBaseUI(idx, state > -1);
+    }
+
+    void UpdateBaseUI(BASE_TYPE idx, bool hasRunner)
+    {
+        Image targetImg = null;
+        if (idx == BASE_TYPE.E_FIRST_BASE) targetImg = ImageFirst;
+        else if (idx == BASE_TYPE.E_SECOND_BASE) targetImg = ImageSecond;
+        else if (idx == BASE_TYPE.E_THIRD_BASE) targetImg = ImageThird;
+
+        if (targetImg != null)
+        {
+            Color targetColor = Color.white;
+            if (hasRunner)
+            {
+                ColorUtility.TryParseHtmlString("#F00", out targetColor);
+            }
+            targetImg.DOColor(targetColor, 0.3f);
+        }
     }
 
     /// <summary>
-    /// <para>-1  ->  ¼öºñ¼ö ¾øÀ½</para>
-    /// <para>0  ->  Æ÷¼ö</para>
-    /// <para>1  ->  1·ç¼ö</para>
-    /// <para>2  ->  2·ç¼ö</para>
-    /// <para>3  ->  À¯°İ¼ö</para>
-    /// <para>4  ->  3·ç¼ö</para>
-    /// <para>8  ->  Åõ¼ö</para>
+    /// <para>-1  ->  ìˆ˜ë¹„ìˆ˜ ì—†ìŒ</para>
+    /// <para>0  ->  í¬ìˆ˜</para>
+    /// <para>1  ->  1ë£¨ìˆ˜</para>
+    /// <para>2  ->  2ë£¨ìˆ˜</para>
+    /// <para>3  ->  ìœ ê²©ìˆ˜</para>
+    /// <para>4  ->  3ë£¨ìˆ˜</para>
+    /// <para>8  ->  íˆ¬ìˆ˜</para>
     /// </summary>
     /// <param name="idx"></param>
     /// <param name="state"></param>
     public void SetDefencerBaseState(BASE_TYPE idx, int state)
     {
         setBaseState(idx, getState(state), getBaseState(idx)[1]);
-        /*int index = getIndex(idx);
-        Bases[index].name = getState(state) + Bases[index].name[1];*/
     }
 
-    public PLAYER_TYPE GetThrowTarget()
+    public void ClearBases()
     {
-        for(int i = Bases.Count - 1; i >= 0; i--)
+        for (int i = Bases.Count - 1; i >= 0; i--)
         {
-            char state = getBaseState((BASE_TYPE)(i + 2))[1];
-            if (state > '9')
+            BASE_TYPE baseType = (BASE_TYPE)(i + 2);
+            SetAttackerBaseState(baseType, -1);
+            SetDefencerBaseState(baseType, -1);
+        }
+    }
+
+    public void AdvanceRunnersForWalk()
+    {
+        // ë§Œë£¨(3ë£¨, 2ë£¨, 1ë£¨ ëª¨ë‘ ì£¼ìê°€ ìˆì„ ë•Œ) ì²˜ë¦¬ ë“± ì—°ì‡„ ë°€ì–´ë‚´ê¸°
+        bool firstOccupied = GetAttckerBaseState(BASE_TYPE.E_FIRST_BASE) > '9';
+        bool secondOccupied = GetAttckerBaseState(BASE_TYPE.E_SECOND_BASE) > '9';
+        bool thirdOccupied = GetAttckerBaseState(BASE_TYPE.E_THIRD_BASE) > '9';
+
+        if (firstOccupied)
+        {
+            if (secondOccupied)
             {
-                if (state == DEFAULT_CHAR) continue;
-                Debug.Log((PLAYER_TYPE)((int)state - ('0' + 10)));
-                return (PLAYER_TYPE)((int)state - ('0' + 10));
+                if (thirdOccupied)
+                {
+                    // ë§Œë£¨ ë°€ì–´ë‚´ê¸° -> 3ë£¨ ì£¼ìëŠ” í™ˆìœ¼ë¡œ (ë“ì  ì²˜ë¦¬ëŠ” ì¶”í›„ ê³ ë„í™”, ì¼ë‹¨ 3ë£¨ ë¹„ì›€)
+                    SetAttackerBaseState(BASE_TYPE.E_THIRD_BASE, -1);
+                }
+                // 2ë£¨ ì£¼ìë¥¼ 3ë£¨ë¡œ
+                SetAttackerBaseState(BASE_TYPE.E_THIRD_BASE, GetAttckerBaseState(BASE_TYPE.E_SECOND_BASE) - '0');
+            }
+            // 1ë£¨ ì£¼ìë¥¼ 2ë£¨ë¡œ
+            SetAttackerBaseState(BASE_TYPE.E_SECOND_BASE, GetAttckerBaseState(BASE_TYPE.E_FIRST_BASE) - '0');
+        }
+    }
+
+    public Transform GetThrowTarget(Transform throwerTransform, PLAYER_TYPE throwerType = PLAYER_TYPE.E_PITCHER)
+    {
+        // í¬ìŠ¤ ì•„ì›ƒ ê°€ëŠ¥í•œ ë² ì´ìŠ¤ë¥¼ ì°¾ìŒ (1ë£¨ë¶€í„° ìˆœì„œëŒ€ë¡œ - í™•ì‹¤í•œ ì•„ì›ƒ ìš°ì„ )
+        Transform forceOutTarget = null;
+        float bestForceOutScore = float.MaxValue;
+        
+        // ì„ í–‰ ì£¼ì ì¤‘ ê°€ì¥ ê°€ê¹Œìš´(ì¡ê¸° ì‰¬ìš´) íƒ€ê²Ÿë„ íƒìƒ‰
+        Transform leadRunnerTarget = null;
+        float bestLeadRunnerScore = float.MaxValue;
+        
+        for(int i = 0; i < Bases.Count; i++)
+        {
+            BASE_TYPE baseType = (BASE_TYPE)(i + 2); // E_FIRST_BASE = 2
+            char state = getBaseState(baseType)[1];
+            
+            // ì£¼ìê°€ í•´ë‹¹ ë² ì´ìŠ¤ë¡œ í–¥í•˜ê³  ìˆê±°ë‚˜(> '9') ë„ì°©í•´ìˆìŒ
+            if (state > '9' && state != DEFAULT_CHAR)
+            {
+                Transform targetBase = Bases[i];
+                
+                // ë˜ì§€ëŠ” ì‚¬ëŒì´ íƒ€ê²Ÿ ë³¸ì¸ì´ë©´ íŒ¨ìŠ¤
+                if (Vector3.Distance(throwerTransform.position, targetBase.position) < 2.0f)
+                {
+                    continue; 
+                }
+
+                float throwDist = Vector3.Distance(throwerTransform.position, targetBase.position);
+                
+                // ì£¼ìê°€ ë‹¬ë¦¬ëŠ” ì¤‘(+10 ìƒíƒœ)ì¸ì§€, ì´ë¯¸ ë„ì°©(+0 ìƒíƒœ)ì¸ì§€ íŒë³„
+                int stateVal = state - '0';
+                bool isRunning = stateVal >= 10; // ë‹¬ë¦¬ëŠ” ì¤‘
+                
+                // í¬ìŠ¤ ì•„ì›ƒ ì ìˆ˜: ì†¡êµ¬ ê±°ë¦¬ê°€ ì§§ì„ìˆ˜ë¡ + 1ë£¨ì— ê°€ê¹Œìš¸ìˆ˜ë¡ ì ìˆ˜ê°€ ì¢‹ìŒ
+                float forceOutScore = throwDist + (i * 5f); // 1ë£¨(i=0) ìš°ì„ 
+                
+                // ë‹¬ë¦¬ëŠ” ì¤‘ì¸ ì£¼ìëŠ” ì‹œê°„ì´ ì´‰ë°•í•˜ë¯€ë¡œ ë” ë†’ì€ ìš°ì„ ìˆœìœ„
+                if (isRunning) forceOutScore -= 10f;
+                
+                // ë„ˆë¬´ ë©€ë©´ í˜ë„í‹°
+                if (throwDist > 30f && baseType != BASE_TYPE.E_FIRST_BASE)
+                {
+                    forceOutScore += 50f; // ë§¤ìš° í° í˜ë„í‹°
+                }
+                
+                if (forceOutScore < bestForceOutScore)
+                {
+                    bestForceOutScore = forceOutScore;
+                    forceOutTarget = targetBase;
+                }
+                
+                // ì„ í–‰ ì£¼ì íƒ€ê²Ÿ (3ë£¨ > 2ë£¨ > 1ë£¨ ìˆœ - ì´ë¯¸ ì§„ë£¨í•œ ì£¼ì ì¡ê¸°)
+                if (!isRunning && baseType > BASE_TYPE.E_FIRST_BASE)
+                {
+                    float leadScore = throwDist - (i * 3f); // ë†’ì€ ë² ì´ìŠ¤ ìš°ì„ 
+                    if (leadScore < bestLeadRunnerScore)
+                    {
+                        bestLeadRunnerScore = leadScore;
+                        leadRunnerTarget = targetBase;
+                    }
+                }
             }
         }
-        return PLAYER_TYPE.E_PITCHER;
+        
+        // í¬ìŠ¤ ì•„ì›ƒì´ ê°€ëŠ¥í•œ íƒ€ê²Ÿì´ ìˆìœ¼ë©´ ìš°ì„ 
+        if (forceOutTarget != null) return forceOutTarget;
+        
+        // ì„ í–‰ ì£¼ì íƒœê·¸ ì•„ì›ƒ ê°€ëŠ¥í•˜ë©´ ì‹œë„
+        if (leadRunnerTarget != null) return leadRunnerTarget;
+        
+        // ì•„ë¬´ ì£¼ìë„ ë›°ì§€ ì•Šê±°ë‚˜ ë§ˆë•…í•œ íƒ€ê²Ÿì´ ì—†ìœ¼ë©´ íˆ¬ìˆ˜ì—ê²Œ ë°˜í™˜
+        if (throwerType == PLAYER_TYPE.E_PITCHER) 
+        {
+            return throwerTransform;
+        }
+        else
+        {
+            // íˆ¬ìˆ˜ì˜ Transformì„ ê°€ì ¸ì˜¤ê¸° (Team í´ë˜ìŠ¤ë¥¼ í†µí•´)
+            Team team = throwerTransform.parent.GetComponent<Team>();
+            if (team != null)
+            {
+                return team.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
+            }
+            return Bases[getIndex(BASE_TYPE.E_SECOND_BASE)]; 
+        }
     }
 }

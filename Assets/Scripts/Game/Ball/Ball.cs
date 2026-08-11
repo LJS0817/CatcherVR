@@ -23,6 +23,9 @@ public class Ball : MonoBehaviour
     bool _playerThrows;
     bool _aiThrows;
     bool _windUp;
+    public bool _isBattedBall; // 배트에 맞은 타구인지 여부
+    public bool _isSwingMiss;
+    public bool IsFoul;
 
     public LineRenderer Line;
 
@@ -42,6 +45,9 @@ public class Ball : MonoBehaviour
         _playerThrows = false;
         _aiThrows = false;
         _windUp = false;
+        _isBattedBall = false;
+        _isSwingMiss = false;
+        IsFoul = false;
         _contactName = "";
 
         _landPosition = Vector3.zero;
@@ -58,6 +64,7 @@ public class Ball : MonoBehaviour
         _landPosition = Vector3.zero;
         _flyDirection = Vector3.zero;
         _playerThrows = false;
+        _isSwingMiss = false;
         //_aiThrows = false;
 
         _calc.init();
@@ -92,6 +99,15 @@ public class Ball : MonoBehaviour
 
     private void OnCollisionEnter(Collision collision)
     {
+        if (IsFoul && (collision.transform.CompareTag("Ground") || collision.transform.CompareTag("Untagged")))
+        {
+            // 파울볼이 땅에 닿으면 카운트 증가 및 데드볼 처리 -> 플레이 리셋
+            IsFoul = false;
+            CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_FOUL, null);
+            if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.ResetPlay();
+            return;
+        }
+
         if (!_contact)
         {
             _contactName = collision.transform.tag;
@@ -121,8 +137,7 @@ public class Ball : MonoBehaviour
             }
             if (collision.gameObject.name.Contains("bat"))
             {
-                //Debug.Log(GetVelocity());
-                //Debug.Log(collision.transform.name);
+                _isBattedBall = true;
                 _rig.linearVelocity *= 3f;
                 LostBall();
             }
@@ -131,10 +146,20 @@ public class Ball : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        if(other.tag.Equals("Finish") && CountsProvider.provider.ContainsStrikeZone(transform.position) && _windUp)
+        if(other.tag.Equals("Finish") && _windUp)
         {
             _windUp = false;
-            CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_STRIKE, () => { GamePlayerProvider.provider.PlayerOut(PLAYER_TYPE.E_PITCHER); });
+            
+            bool isStrikeZone = CountsProvider.provider.ContainsStrikeZone(transform.position);
+            
+            if (_isSwingMiss || isStrikeZone)
+            {
+                CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_STRIKE, null);
+            }
+            else
+            {
+                CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_BALL, null);
+            }
         }
     }
 
@@ -153,6 +178,7 @@ public class Ball : MonoBehaviour
         ResetVelocity();
         changeState(true, parent);
         transform.localPosition = Vector3.zero;
+        IsFoul = false; // 잡힌 공은 파울(땅에 닿는 데드볼) 처리를 취소함
     }
 
     public void LostBall()
@@ -231,7 +257,8 @@ public class Ball : MonoBehaviour
 
     void predictBallPath(bool decreaseFlag=true)
     {
-        if(!_playerThrows && !_aiThrows && decreaseFlag) _rig.linearVelocity *= 0.35f;
+        // 타구(배트에 맞은 공)는 속도를 줄이지 않음. 그래야 외야 낙구 지점이 정확하게 예측됨
+        if(!_playerThrows && !_aiThrows && decreaseFlag && !_isBattedBall) _rig.linearVelocity *= 0.35f;
         _landPosition = _calc.Calculate(_rig.linearVelocity, _rig.mass, Line);
 
         _flyDirection = (_landPosition - Line.GetPosition(0)).normalized;
@@ -245,7 +272,13 @@ public class Ball : MonoBehaviour
 
     public bool DontNeedToMove()
     {
-        return _aiThrows;
+        // AI가 던진 송구이거나, 아직 배트에 맞지 않은 투구라면 수비수가 타구처럼 쫓아가지 않음
+        return _aiThrows || !_isBattedBall;
+    }
+
+    public void SetBattedBall(bool isBatted)
+    {
+        _isBattedBall = isBatted;
     }
 
     public string GetContactName() { return _contactName; }

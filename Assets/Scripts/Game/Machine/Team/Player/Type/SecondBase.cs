@@ -12,4 +12,23 @@ public class SecondBase : BaseballPlayer
     {
         base.update();
     }
+
+    public override bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    {
+        // 1루수가 공을 쫓으면 2루수가 1루 커버
+        if (chaser.Type == PLAYER_TYPE.E_FIRST_BASE)
+        {
+            DefRole = DEFENSIVE_ROLE.BASE_COVER;
+            RoleTargetPosition = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_FIRST_BASE);
+            return true;
+        }
+        // 유격수가 공을 쫓으면 2루수가 2루 커버
+        else if (chaser.Type == PLAYER_TYPE.E_SHORT_STOP)
+        {
+            DefRole = DEFENSIVE_ROLE.BASE_COVER;
+            RoleTargetPosition = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_SECOND_BASE);
+            return true;
+        }
+        return false;
+    }
 }

@@ -5,6 +5,11 @@ public class Attacker : PlayerRole
 {
     float _swingSpeed;
     bool _counted;
+    
+    // 주루(Baserunning) 변수
+    float _currentSpeed;
+    bool _isOverrunning;
+    Vector3 _runTarget;
 
     public override void init(float h, Transform tool, PLAYER_TYPE t, Ball ball, Transform player, BASE_TYPE bT = BASE_TYPE.E_SELF)
     {
@@ -23,8 +28,7 @@ public class Attacker : PlayerRole
 
     public override void SetController(Transform pool, Transform point, Transform target, float speed=0.135f)
     {
-        _controller = new SwingController(_offsets.GetChild(2), point, _ball.transform, 0.135f);
-        //base.SetController(_offsets.GetChild(2), point, _ball.transform, speed, data);
+        _controller = new SwingController(_offsets.GetChild(2), point, _ball.transform, 0.135f, this);
     }
 
     AnimationEvent createEvent(float time, int i)
@@ -72,7 +76,41 @@ public class Attacker : PlayerRole
             Debug.DrawLine(_my.position, getMovement().GetTarget(), Color.red, 0.1f);
             if (!getMovement().CompareMovementType(MOVEMENT_TYPE.E_BASE))
             {
-                _my.position = getMovement().GetMovementPosition(_my.position, getMovement().GetTarget(), speed);
+                // 가속도 적용 (초기 0에서 최고 속도 speed까지)
+                _currentSpeed = Mathf.Lerp(_currentSpeed, speed, Time.deltaTime * 2f);
+                
+                // 이동 처리
+                _my.position = getMovement().GetMovementPosition(_my.position, _runTarget, _currentSpeed);
+                
+                // 회전 처리 (Slerp)
+                Vector3 dir = (_runTarget - _my.position).normalized;
+                dir.y = 0;
+                if (dir != Vector3.zero)
+                {
+                    _my.rotation = Quaternion.Slerp(_my.rotation, Quaternion.LookRotation(dir), Time.deltaTime * 8f);
+                }
+                
+                // 오버런 및 도착 판정
+                float dist = Vector3.Distance(_my.position, _runTarget);
+                if (dist < 0.5f)
+                {
+                    if (_isOverrunning)
+                    {
+                        // 오버런 지점 도달 시 정지
+                        getMovement().SetMovementType(MOVEMENT_TYPE.E_STAY);
+                        _ani.SetBool("IsRunning", false);
+                        _currentSpeed = 0f;
+                    }
+                    else
+                    {
+                        // 베이스 도달 시 오버런 모드 돌입
+                        _isOverrunning = true;
+                        // 기존 런 타겟(베이스) 너머로 3미터 추가 진행
+                        Vector3 overrunDir = (_runTarget - _my.position).normalized;
+                        if (overrunDir == Vector3.zero) overrunDir = _my.forward;
+                        _runTarget = _runTarget + overrunDir * 3f;
+                    }
+                }
             }
         }
     }
@@ -94,25 +132,32 @@ public class Attacker : PlayerRole
         if (!_counted && i == 3 && getMovement().CompareMovementType(MOVEMENT_TYPE.E_STAY))
         {
             _counted = true;
-            Debug.Log(_ball.GetContactName());
-            if(_ball.GetContactName().Equals("Bat"))
+            // 타격 정타(Hit)는 SwingController가 OnHitBall()을 통해 스크립트로 처리합니다.
+            // 여기서는 물리 타격이 아닌 스트라이크/헛스윙만 처리합니다.
+            if(!_ball.GetContactName().Equals("Bat") && _ball.GetVelocity().z > 0)
             {
-                Debug.Log(_ball.GetVelocity().z);
-                if(_ball.GetVelocity().z < 0)
-                {
-                    if(_base != BASE_TYPE.E_SELF) BasePositionProvider.provider.SetAttackerBaseState(_base, -1);
-                    _base = BasePositionProvider.provider.GetNextBase(_base);
-                    BasePositionProvider.provider.SetAttackerBaseState(_base, ((int)_type + 10));
-                    setMovementTarget(BasePositionProvider.provider.GetBasePosition(_base), _my.position, -1f, MOVEMENT_TYPE.E_RUN);
-                } else
-                {
-                    CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_FOUL, () => { });
-                }
-            } else
-            {
-                CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_STRIKE, () => { GamePlayerProvider.provider.PlayerOut(PLAYER_TYPE.E_PITCHER); });
+                _ball._isSwingMiss = true;
             }
         }
+    }
+
+    public void OnHitBall()
+    {
+        // 1. 배트 숨기기 및 애니메이션 전환
+        _item.gameObject.SetActive(false);
+        _ani.SetBool("IsRunning", true);
+        
+        // 2. 베이스 타겟 설정
+        if(_base != BASE_TYPE.E_SELF) BasePositionProvider.provider.SetAttackerBaseState(_base, -1);
+        _base = BasePositionProvider.provider.GetNextBase(_base);
+        BasePositionProvider.provider.SetAttackerBaseState(_base, ((int)_type + 10));
+        
+        _runTarget = BasePositionProvider.provider.GetBasePosition(_base);
+        setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN);
+        
+        // 3. 주루 가속도 초기화
+        _currentSpeed = 0f;
+        _isOverrunning = false;
     }
 
     public override void OnTriggerEnter(Collider collider)
