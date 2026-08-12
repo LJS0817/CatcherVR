@@ -149,24 +149,34 @@ public class Defencer : PlayerRole
             if (getMovement().isMoving())
             {
                 float moveSpeed = speed;
+                float acceleration = 15f;
+                
                 MOVEMENT_TYPE mt = getMovement().GetMovementType();
                 if (mt == MOVEMENT_TYPE.E_PREDICT_PATH || mt == MOVEMENT_TYPE.E_FOLLOW_BALL)
-                    moveSpeed = speed * 1.3f; // 타구 추적 시 가속
+                {
+                    moveSpeed = speed * (IsOutfielder ? 1.4f : 1.25f);
+                    acceleration = IsOutfielder ? 12f : 18f; // 외야수는 관성이 커서 묵직함
+                }
                 else if (mt == MOVEMENT_TYPE.E_BASE)
-                    moveSpeed = speed * 0.85f; // 베이스 커버 시 약간 감속
+                {
+                    moveSpeed = speed * 0.9f; 
+                    acceleration = 20f;
+                }
 
-                if (!getMovement().CompareMovementType(MOVEMENT_TYPE.E_FOLLOW_BALL))
+                Vector3 targetPos = getMovement().GetTarget();
+                if (getMovement().CompareMovementType(MOVEMENT_TYPE.E_FOLLOW_BALL))
                 {
-                    _my.position = getMovement().GetMovementPosition(_my.position, getMovement().GetTarget(), moveSpeed);
+                    targetPos = _ball.GetPositionWithYToZero();
                 }
-                else
-                {
-                    _my.position = getMovement().GetMovementPosition(_my.position, _ball.GetPositionWithYToZero(), moveSpeed);
-                }
+
+                _my.position = getMovement().GetMovementPosition(_my.position, targetPos, moveSpeed, acceleration);
                 
-                Vector3 dir = (getMovement().GetTarget() - _my.position).normalized;
+                Vector3 dir = (targetPos - _my.position).normalized;
                 dir.y = 0;
-                if (dir != Vector3.zero) _my.rotation = Quaternion.Slerp(_my.rotation, Quaternion.LookRotation(dir), Time.deltaTime * 10f);
+                if (dir.sqrMagnitude > 0.001f) 
+                {
+                    _my.rotation = Quaternion.Slerp(_my.rotation, Quaternion.LookRotation(dir), Time.deltaTime * (IsOutfielder ? 8f : 12f));
+                }
             }
         }
 
@@ -174,16 +184,20 @@ public class Defencer : PlayerRole
         if (!_hasBall && _ball != null && _ball.isCatchable())
         {
             float distToBall = Vector3.Distance(_my.position, _ball.GetPosition());
-            if (distToBall < _catchRange + 1.0f)
+            float heightToBall = _ball.GetPosition().y;
+
+            if (distToBall < _catchRange + 1.5f && heightToBall < 4.0f)
             {
-                // 포구 범위 안에 들어오면 글러브를 부드럽게 공 쪽으로 이동
                 _isReachingForBall = true;
                 _gloveReachTimer += Time.deltaTime;
-                float lerpSpeed = Mathf.Lerp(8f, 25f, _gloveReachTimer); // 점점 빨라지는 Lerp
+                
+                // 공의 속도와 거리에 비례하여 글러브 속도 조절 (자연스럽게 마중 나가는 느낌)
+                float ballSpeedXZ = new Vector2(_ball.GetVelocity().x, _ball.GetVelocity().z).magnitude;
+                float lerpSpeed = Mathf.Clamp(10f + (ballSpeedXZ * 0.5f), 15f, 35f);
+                
                 _item.position = Vector3.Lerp(_item.position, _ball.GetPosition(), Time.deltaTime * lerpSpeed);
 
-                // 글러브가 충분히 공에 가까워지면 포구 실행
-                if (Vector3.Distance(_item.position, _ball.GetPosition()) < 0.4f && !_hasBall)
+                if (Vector3.Distance(_item.position, _ball.GetPosition()) < 0.35f && !_hasBall)
                 {
                     catchBall();
                     _isReachingForBall = false;
@@ -192,10 +206,9 @@ public class Defencer : PlayerRole
             }
             else
             {
-                // 범위 밖이면 글러브를 기본 위치로 복귀
                 _isReachingForBall = false;
                 _gloveReachTimer = 0f;
-                _item.localPosition = Vector3.Lerp(_item.localPosition, Vector3.zero, Time.deltaTime * 5f);
+                _item.localPosition = Vector3.Lerp(_item.localPosition, Vector3.zero, Time.deltaTime * 8f);
             }
         }
 
@@ -208,11 +221,34 @@ public class Defencer : PlayerRole
         {
             if (getMovement().CompareMovementType(MOVEMENT_TYPE.E_PREDICT_PATH))
             {
-                float nowDistXZ = Vector2.Distance(new Vector2(_ball.GetPosition().x, _ball.GetPosition().z), new Vector2(_my.position.x, _my.position.z));
+                // 지속적으로 최적의 낙구 지점(인터셉트)을 갱신 (커브 경로 생성 효과)
+                LineRenderer line = _ball.Line;
+                if (line != null && line.positionCount > 0)
+                {
+                    float playerSpeed = IsOutfielder ? 5.6f : 5.0f; // 예상 최고 속도
+                    Vector3 bestIntercept = _ball.GetLandPosition(); // 기본 낙구 지점
+                    
+                    for (int i = 0; i < line.positionCount; i++)
+                    {
+                        Vector3 pos = line.GetPosition(i);
+                        float ballTime = i * 0.1f;
+                        float myTime = Vector2.Distance(new Vector2(_my.position.x, _my.position.z), new Vector2(pos.x, pos.z)) / playerSpeed;
 
+                        float maxCatchHeight = IsOutfielder ? 3.0f : 2.5f;
+                        // 현재 내 위치에서 달렸을 때, 공이 도달하기 전이나 동시에 도착할 수 있는 가장 빠른 지점을 찾음
+                        if (myTime <= ballTime && pos.y <= maxCatchHeight)
+                        {
+                            bestIntercept = new Vector3(pos.x, 0, pos.z);
+                            break;
+                        }
+                    }
+                    setMovementTarget(bestIntercept, _my.position, -1f, MOVEMENT_TYPE.E_PREDICT_PATH);
+                }
+
+                float nowDistXZ = Vector2.Distance(new Vector2(_ball.GetPosition().x, _ball.GetPosition().z), new Vector2(_my.position.x, _my.position.z));
                 if (nowDistXZ < _range.z)
                 {
-                    // 외야수는 공이 6m 이하로 낮아졌을 때 추적 전환 (기존 4m → 6m으로 더 일찍 반응)
+                    // 외야수는 공이 6m 이하로 낮아졌을 때 추적 전환
                     if (!IsOutfielder || _ball.GetPosition().y < 6.0f)
                     {
                         getMovement().SetMovementType(MOVEMENT_TYPE.E_FOLLOW_BALL);
@@ -510,9 +546,9 @@ public class Defencer : PlayerRole
 
                 _readyToThrow += Time.deltaTime;
                 
-                // 내야수는 빠르게(0.3초), 외야수는 여유있게(0.5초) 송구 준비
-                float minThrowDelay = IsInfielder ? 0.25f : 0.4f;
-                float maxThrowDelay = IsInfielder ? 0.6f : 0.8f;
+                // 내야수는 빠르게 퀵 스로우(0.15~0.25초), 외야수는 크로우 홉 딜레이(0.5~0.7초) 적용
+                float minThrowDelay = IsInfielder ? 0.15f : 0.5f;
+                float maxThrowDelay = IsInfielder ? 0.25f : 0.7f;
                 float angleThreshold = 10.0f;
                 
                 if (_readyToThrow >= maxThrowDelay || (_readyToThrow >= minThrowDelay && Vector3.Angle(_my.forward, lookDir.normalized) < angleThreshold))
@@ -529,7 +565,16 @@ public class Defencer : PlayerRole
                     // 정확하게 타겟을 향해 공이 날아가도록 손(item)의 방향을 타겟으로 강제 정렬
                     if (_item != null)
                     {
-                        _item.rotation = Quaternion.LookRotation(targetTransform.position - _item.position);
+                        Vector3 throwDir = targetTransform.position - _item.position;
+                        float dist = throwDir.magnitude;
+                        
+                        // 거리가 15m 이상이면 상향각을 주어 포물선(Parabolic) 궤적을 그리게 함
+                        if (dist > 15f)
+                        {
+                            throwDir.y += (dist - 15f) * 0.15f; 
+                        }
+                        
+                        _item.rotation = Quaternion.LookRotation(throwDir);
                     }
 
                     GetController().Action(targetTransform);

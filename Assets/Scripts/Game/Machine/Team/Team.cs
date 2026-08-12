@@ -126,18 +126,32 @@ public class Team : MonoBehaviour
             PLAYER_TYPE pType = _players[i].Type;
             bool isOutfielder = (pType == PLAYER_TYPE.E_LEFT_FILED || pType == PLAYER_TYPE.E_CENTER_FIELD || pType == PLAYER_TYPE.E_RIGHT_FILED);
 
-            // 외야 타구 시 컷오프 맨 지정
+            // 외야 타구 시 컷오프 맨 지정 (더블 컷오프)
             if (isOutfieldHit)
             {
-                if ((landPos.x < 0 && pType == PLAYER_TYPE.E_SHORT_STOP) || (landPos.x >= 0 && pType == PLAYER_TYPE.E_SECOND_BASE))
+                bool isLeftHit = landPos.x < 0;
+                
+                if (pType == PLAYER_TYPE.E_SHORT_STOP || pType == PLAYER_TYPE.E_SECOND_BASE)
                 {
                     _players[i].DefRole = DEFENSIVE_ROLE.CUTOFF;
-                    // Chaser가 던질 타겟을 미리 계산하여 그 사이로 위치
                     if (chaser != null) 
                     {
                         Transform throwTarget = BasePositionProvider.provider.GetThrowTarget(chaser.transform, chaser.Type);
-                        Vector3 cutoffPos = Vector3.Lerp(landPos, throwTarget.position, 0.5f);
-                        _players[i].RoleTargetPosition = cutoffPos;
+                        Vector3 dirToChaser = (landPos - throwTarget.position).normalized;
+                        float totalDist = Vector3.Distance(landPos, throwTarget.position);
+                        
+                        Vector3 baseCutoffPos = throwTarget.position + dirToChaser * (totalDist * 0.4f);
+                        
+                        if ((isLeftHit && pType == PLAYER_TYPE.E_SHORT_STOP) || (!isLeftHit && pType == PLAYER_TYPE.E_SECOND_BASE))
+                        {
+                            // 메인 컷오프
+                            _players[i].RoleTargetPosition = baseCutoffPos;
+                        }
+                        else
+                        {
+                            // 보조 컷오프 (더블 컷오프: 메인 뒤쪽 8m)
+                            _players[i].RoleTargetPosition = baseCutoffPos - dirToChaser * 8.0f;
+                        }
                     }
                     continue;
                 }
@@ -150,9 +164,9 @@ public class Team : MonoBehaviour
                 if (distToChaser < 20f && isOutfieldHit) 
                 {
                     _players[i].DefRole = DEFENSIVE_ROLE.BACKUP;
-                    // Chaser 뒤쪽으로 5m
+                    // 체이서 뒤쪽으로 8m 깊은 백업
                     Vector3 backupDir = (chaser.transform.position - BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_HOME_BASE)).normalized;
-                    _players[i].RoleTargetPosition = chaser.transform.position + backupDir * 5f;
+                    _players[i].RoleTargetPosition = chaser.transform.position + backupDir * 8f;
                 }
             }
 
@@ -160,7 +174,17 @@ public class Team : MonoBehaviour
             if (chaser != null && !isOutfieldHit && _players[i].DefRole == DEFENSIVE_ROLE.IDLE && !isOutfielder)
             {
                 _players[i].DefRole = DEFENSIVE_ROLE.BACKUP;
-                _players[i].RoleTargetPosition = chaser.transform.position + (chaser.transform.position - landPos).normalized * 5f;
+                // 송구 타겟 연장선 뒤쪽 8m (악송구 대비 뎁스 백업)
+                Transform throwTarget = BasePositionProvider.provider.GetThrowTarget(chaser.transform, chaser.Type);
+                if (throwTarget != chaser.transform)
+                {
+                    Vector3 throwDir = (throwTarget.position - chaser.transform.position).normalized;
+                    _players[i].RoleTargetPosition = throwTarget.position + throwDir * 8.0f;
+                }
+                else
+                {
+                    _players[i].RoleTargetPosition = chaser.transform.position + (chaser.transform.position - landPos).normalized * 5f;
+                }
             }
         }
     }

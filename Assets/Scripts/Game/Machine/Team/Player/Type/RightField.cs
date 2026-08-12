@@ -16,14 +16,31 @@ public class RightField : BaseballPlayer
 
     public override bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
     {
-        // 중견수나 1루수가 타구를 쫓을 때 백업
-        if (chaser.Type == PLAYER_TYPE.E_CENTER_FIELD || chaser.Type == PLAYER_TYPE.E_FIRST_BASE)
+        if (chaser == this) return false;
+
+        bool isOutfieldHit = landPos.z > 25f;
+
+        // 1. 내야 땅볼 시 1루 송구 백업 (우익수의 핵심 임무)
+        if (!isOutfieldHit && (chaser.Type == PLAYER_TYPE.E_SHORT_STOP || chaser.Type == PLAYER_TYPE.E_THIRD_BASE || chaser.Type == PLAYER_TYPE.E_SECOND_BASE || chaser.Type == PLAYER_TYPE.E_PITCHER))
+        {
+            DefRole = DEFENSIVE_ROLE.BACKUP;
+            Vector3 firstBasePos = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_FIRST_BASE);
+            
+            // 타구 처리자(유격수 등)로부터 1루로 향하는 송구 선의 연장선상 15m 뒤로 이동
+            Vector3 throwDir = (firstBasePos - chaser.transform.position).normalized;
+            RoleTargetPosition = firstBasePos + throwDir * 15f; 
+            return true;
+        }
+
+        // 2. 외야 타구 시 중견수 백업
+        if (isOutfieldHit && chaser.Type == PLAYER_TYPE.E_CENTER_FIELD && landPos.x > 0) // 우중간 타구일 때
         {
             DefRole = DEFENSIVE_ROLE.BACKUP;
             Vector3 backupDir = (chaser.transform.position - BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_HOME_BASE)).normalized;
-            RoleTargetPosition = chaser.transform.position + backupDir * 7f; // 7m 뒤에서 백업
+            RoleTargetPosition = chaser.transform.position + backupDir * 8f; // 8m 뒤에서 백업
             return true;
         }
+
         return false;
     }
 }

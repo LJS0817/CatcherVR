@@ -10,6 +10,10 @@ public class Attacker : PlayerRole
     float _currentSpeed;
     bool _isOverrunning;
     Vector3 _runTarget;
+    
+    BASE_TYPE _finalTargetBase;
+    bool _isRounding;
+    float _startDelayTimer;
 
     public override void init(float h, Transform tool, PLAYER_TYPE t, Ball ball, Transform player, BASE_TYPE bT = BASE_TYPE.E_SELF)
     {
@@ -71,6 +75,17 @@ public class Attacker : PlayerRole
             GetController().ResetValue();
         }
 
+        if (_startDelayTimer > 0f)
+        {
+            _startDelayTimer -= Time.deltaTime;
+            if (_startDelayTimer <= 0f)
+            {
+                _ani.SetBool("IsRunning", true);
+                setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN);
+            }
+            return;
+        }
+
         if (getMovement().isMoving())
         {
             Debug.DrawLine(_my.position, getMovement().GetTarget(), Color.red, 0.1f);
@@ -87,28 +102,60 @@ public class Attacker : PlayerRole
                 dir.y = 0;
                 if (dir != Vector3.zero)
                 {
-                    _my.rotation = Quaternion.Slerp(_my.rotation, Quaternion.LookRotation(dir), Time.deltaTime * 8f);
+                    _my.rotation = Quaternion.Slerp(_my.rotation, Quaternion.LookRotation(dir), Time.deltaTime * 10f);
                 }
                 
-                // 오버런 및 도착 판정
                 float dist = Vector3.Distance(_my.position, _runTarget);
+                
+                // 라운딩(바나나 궤적) 중일 때는 1루를 정확히 안 밟고 스쳐 지나가며 2루 타겟으로 변경
+                if (_isRounding && dist < 3.0f)
+                {
+                    _isRounding = false;
+                    _base = BasePositionProvider.provider.GetNextBase(_base);
+                    BasePositionProvider.provider.SetAttackerBaseState(_base, ((int)_type + 10));
+                    _runTarget = BasePositionProvider.provider.GetBasePosition(_base);
+                    setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN);
+                    return;
+                }
+
+                // 일반 베이스 도달 판정
                 if (dist < 0.5f)
                 {
-                    if (_isOverrunning)
+                    if (_base == _finalTargetBase)
                     {
-                        // 오버런 지점 도달 시 정지
-                        getMovement().SetMovementType(MOVEMENT_TYPE.E_STAY);
-                        _ani.SetBool("IsRunning", false);
-                        _currentSpeed = 0f;
+                        if (_base == BASE_TYPE.E_FIRST_BASE || _base == BASE_TYPE.E_HOME_BASE)
+                        {
+                            // 1루나 홈은 오버런 허용
+                            if (_isOverrunning)
+                            {
+                                getMovement().SetMovementType(MOVEMENT_TYPE.E_STAY);
+                                _ani.SetBool("IsRunning", false);
+                                _currentSpeed = 0f;
+                            }
+                            else
+                            {
+                                _isOverrunning = true;
+                                Vector3 overrunDir = (_runTarget - _my.position).normalized;
+                                if (overrunDir == Vector3.zero) overrunDir = _my.forward;
+                                _runTarget = _runTarget + overrunDir * 3f;
+                            }
+                        }
+                        else
+                        {
+                            // 2루나 3루는 지나치지 않고 베이스 위에서 정확히 정지 (슬라이딩 대용)
+                            getMovement().SetMovementType(MOVEMENT_TYPE.E_STAY);
+                            _ani.SetBool("IsRunning", false);
+                            _currentSpeed = 0f;
+                            _my.position = _runTarget; // 베이스 위 안착
+                        }
                     }
                     else
                     {
-                        // 베이스 도달 시 오버런 모드 돌입
-                        _isOverrunning = true;
-                        // 기존 런 타겟(베이스) 너머로 3미터 추가 진행
-                        Vector3 overrunDir = (_runTarget - _my.position).normalized;
-                        if (overrunDir == Vector3.zero) overrunDir = _my.forward;
-                        _runTarget = _runTarget + overrunDir * 3f;
+                        // 아직 최종 목적지가 아니라면 다음 베이스로 계속 뜀
+                        _base = BasePositionProvider.provider.GetNextBase(_base);
+                        BasePositionProvider.provider.SetAttackerBaseState(_base, ((int)_type + 10));
+                        _runTarget = BasePositionProvider.provider.GetBasePosition(_base);
+                        setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN);
                     }
                 }
             }
@@ -143,21 +190,49 @@ public class Attacker : PlayerRole
 
     public void OnHitBall()
     {
-        // 1. 배트 숨기기 및 애니메이션 전환
+        // 1. 배트 숨기기 및 애니메이션 전환 (달리기 시작은 딜레이 후)
         _item.gameObject.SetActive(false);
-        _ani.SetBool("IsRunning", true);
         
-        // 2. 베이스 타겟 설정
+        // 장타 판단 (Extra-base Hit Judgment)
+        Vector3 landPos = _ball.GetLandPosition();
+        _finalTargetBase = BASE_TYPE.E_FIRST_BASE;
+        
+        if (landPos.z > 35f) // 펜스 근처 깊은 타구
+        {
+            if (Mathf.Abs(landPos.x) > 10f) _finalTargetBase = BASE_TYPE.E_THIRD_BASE; // 좌/우중간 3루타 코스
+            else _finalTargetBase = BASE_TYPE.E_SECOND_BASE; // 2루타 코스
+        }
+        else if (landPos.z > 20f && Mathf.Abs(landPos.x) > 12f) // 짧지만 라인선상 빈공간
+        {
+            _finalTargetBase = BASE_TYPE.E_SECOND_BASE;
+        }
+
+        // 2. 초기 베이스 타겟 설정 (우선 1루를 향해)
         if(_base != BASE_TYPE.E_SELF) BasePositionProvider.provider.SetAttackerBaseState(_base, -1);
-        _base = BasePositionProvider.provider.GetNextBase(_base);
+        _base = BasePositionProvider.provider.GetNextBase(BASE_TYPE.E_HOME_BASE); // 타자는 무조건 홈에서 1루로 출발
         BasePositionProvider.provider.SetAttackerBaseState(_base, ((int)_type + 10));
         
-        _runTarget = BasePositionProvider.provider.GetBasePosition(_base);
-        setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN);
+        // 라운딩(바나나 궤적) 설정
+        _isRounding = (_finalTargetBase != BASE_TYPE.E_FIRST_BASE);
+        Vector3 firstBasePos = BasePositionProvider.provider.GetBasePosition(_base);
         
-        // 3. 주루 가속도 초기화
+        if (_isRounding)
+        {
+            // 1루 도달 전 우측 파울라인 쪽으로 살짝 부풀려서(바나나 궤적) 뜀
+            _runTarget = firstBasePos + new Vector3(3f, 0, -3f);
+        }
+        else
+        {
+            _runTarget = firstBasePos;
+        }
+        
+        // 이동 타입 설정 (아직 안 뛰고 대기)
+        getMovement().SetMovementType(MOVEMENT_TYPE.E_STAY);
+        
+        // 3. 주루 초기화 및 딜레이 
         _currentSpeed = 0f;
         _isOverrunning = false;
+        _startDelayTimer = UnityEngine.Random.Range(0.2f, 0.35f);
     }
 
     public override void OnTriggerEnter(Collider collider)
