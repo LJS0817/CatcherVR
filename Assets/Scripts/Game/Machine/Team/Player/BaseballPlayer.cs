@@ -50,6 +50,22 @@ public class BaseballPlayer : MonoBehaviour
         return false;
     }
 
+    /// <summary>
+    /// 타구 유형을 고려한 역할 분배 (기본 구현은 기존 메서드 위임)
+    /// </summary>
+    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos, BATTED_BALL_TYPE ballType)
+    {
+        return AssignSpecialRole(chaser, landPos);
+    }
+
+    /// <summary>
+    /// 이 포지션의 수비 존을 반환. 서브클래스에서 오버라이드하여 커스텀 존 사용 가능.
+    /// </summary>
+    public virtual DefenseZone GetDefenseZone()
+    {
+        return DefenseZone.CreateForPosition(_type);
+    }
+
     public void SetPlayerType(PLAYER_TYPE type)
     {
         _type = type;
@@ -60,7 +76,7 @@ public class BaseballPlayer : MonoBehaviour
     protected float _moveSpeed;
     protected float _height = 1.8f;
 
-    Vector3 _initPos;
+    protected Vector3 _initPos;
 
     /// <summary>
     /// Defencer class | Attacker class
@@ -109,11 +125,17 @@ public class BaseballPlayer : MonoBehaviour
         _role.SetController(_ballPool, trans == null ? _role.GetItemTransform() : trans, _ball.transform);
     }
     
+    public bool IsActiveRunner => _role is Attacker att && att.IsOnBaseOrRunning;
+
     protected virtual void update() { 
         if(Input.GetKeyDown(KeyCode.A))
         {
-            transform.position = _initPos;
-            _role.movementInit();
+            // 공격팀 출루 주자는 A키 리셋 시 위치가 초기화되지 않음
+            if (!IsActiveRunner)
+            {
+                transform.position = _initPos;
+                _role.movementInit();
+            }
         }
         _role.update(_moveSpeed);
     }
@@ -126,6 +148,11 @@ public class BaseballPlayer : MonoBehaviour
     public Transform GetItem()
     {
         return _role.GetItemTransform();
+    }
+
+    public PlayerRole GetRole()
+    {
+        return _role;
     }
 
     public void EnterTheGame(Transform pool, Ball ball, bool isAttacker)

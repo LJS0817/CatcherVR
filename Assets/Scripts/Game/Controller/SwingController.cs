@@ -295,7 +295,8 @@ public class SwingController : RoleController
 
     void EvaluateHit(Transform my)
     {
-        float absDiff = Mathf.Abs(_timeDifferenceAtDecision);
+        float diff = _timeDifferenceAtDecision;
+        float absDiff = Mathf.Abs(diff);
         Vector3 currentVel = _ball.GetVelocity();
         
         // 2스트라이크 커트(파울) 로직: 존 밖 공이나 보더라인 피칭 시 고의로 파울을 만들어 냄
@@ -304,20 +305,60 @@ public class SwingController : RoleController
             absDiff = 0.02f; // 강제로 파울(Foul) 처리 영역으로 밀어냄
         }
 
-        if (absDiff < 0.015f) // 정타 (Fair Hit)
+        if (absDiff < 0.015f) // 인플레이 페어 타구 (Fair Hit)
         {
             _ball.SetBattedBall(true);
-            float speedMultiplier = Random.Range(1.2f, 2.5f);
-            Vector3 hitVel = new Vector3(
-                Random.Range(-10f, 10f), 
-                Random.Range(5f, 25f), 
-                -Mathf.Abs(currentVel.z) * speedMultiplier
-            );
+            
+            // 1. 타이밍에 따른 타구 좌우 방향 (-15도 ~ +15도, 당겨치기/밀어치기)
+            float timingFactor = Mathf.Clamp(diff / 0.015f, -1f, 1f); // -1(매우 당김) ~ +1(매우 밀림)
+            float sprayAngleDeg = timingFactor * 28f + Random.Range(-5f, 5f);
+            
+            // 2. 스트라이크존 상하 위치 및 배트 접촉 높이에 따른 발사각(Launch Angle)
+            // 상단 공: 플라이 경향, 하단 공: 땅볼 경향, 중앙: 라인드라이브
+            float hitQuality = 1.0f - (absDiff / 0.015f); // 0.0(빗맞음) ~ 1.0(완벽한 정타)
+            float launchAngleDeg = 15f;
+            
+            float roll = Random.value;
+            if (hitQuality > 0.7f) // 스위트스폿 정타
+            {
+                if (roll < 0.45f) launchAngleDeg = Random.Range(10f, 22f); // 총알 라인드라이브
+                else if (roll < 0.75f) launchAngleDeg = Random.Range(23f, 34f); // 장타/홈런성 플라이
+                else launchAngleDeg = Random.Range(-6f, 6f); // 빠른 강한 땅볼
+            }
+            else if (hitQuality > 0.35f) // 보통 타구
+            {
+                if (roll < 0.40f) launchAngleDeg = Random.Range(-12f, 8f); // 일반 땅볼
+                else if (roll < 0.80f) launchAngleDeg = Random.Range(20f, 42f); // 일반 외야 플라이
+                else launchAngleDeg = Random.Range(10f, 19f); // 짧은 라인드라이브
+            }
+            else // 빗맞은 타구 (먹히거나 끝에 걸림)
+            {
+                if (roll < 0.50f) launchAngleDeg = Random.Range(-15f, -2f); // 힘없는 내야 땅볼
+                else launchAngleDeg = Random.Range(48f, 70f); // 내야 팝플라이
+            }
+
+            // 3. 타구 속도 (Exit Velocity) 산출 (먹힌 15m/s ~ 총알 45m/s)
+            float baseSpeed = Mathf.Lerp(16f, 43f, hitQuality);
+            float exitSpeed = baseSpeed + Random.Range(-2f, 3f);
+            exitSpeed = Mathf.Clamp(exitSpeed, 14f, 46f);
+
+            // 4. 3D 타구 속도 벡터 생성 (홈플레이트에서 외야는 Z- 방향)
+            float sprayRad = sprayAngleDeg * Mathf.Deg2Rad;
+            Vector3 horizontalDir = new Vector3(-Mathf.Sin(sprayRad), 0, -Mathf.Cos(sprayRad)).normalized;
+            
+            float launchRad = launchAngleDeg * Mathf.Deg2Rad;
+            Vector3 hitVel = (horizontalDir * Mathf.Cos(launchRad) + Vector3.up * Mathf.Sin(launchRad)) * exitSpeed;
+
             _ball.GetComponent<Rigidbody>().linearVelocity = hitVel;
+            _ball.IsFoul = false;
             _ball.LostBall();
             
-            // 타자에게 주루 시작 알림
-            if (_role is Attacker attacker)
+            // 타자 및 주자들에게 주루 시작 알림
+            if (GamePlayerProvider.provider != null)
+            {
+                GamePlayerProvider.provider.NotifyBatterHit();
+            }
+            else if (_role is Attacker attacker)
             {
                 attacker.OnHitBall();
             }
@@ -326,11 +367,14 @@ public class SwingController : RoleController
         {
             _ball.SetBattedBall(true);
             _ball.IsFoul = true; // 파울볼 플래그 설정
-            Vector3 foulVel = new Vector3(
-                (Random.value > 0.5f ? 15f : -15f), 
-                Random.Range(10f, 20f), 
-                Mathf.Abs(currentVel.z) * 0.5f
-            );
+            
+            // 빗맞은 파울볼 궤적 (좌/우 파울라인 밖으로 튀거나 백스탑으로 튀는 궤적)
+            bool isRightFoul = diff > 0 || Random.value > 0.5f;
+            float foulAngleX = isRightFoul ? Random.Range(15f, 28f) : Random.Range(-28f, -15f);
+            float foulAngleY = Random.Range(18f, 45f);
+            float foulAngleZ = Random.Range(-8f, 15f); // 뒤쪽 백스탑 또는 얕은 앞쪽
+            
+            Vector3 foulVel = new Vector3(foulAngleX, foulAngleY, foulAngleZ);
             _ball.GetComponent<Rigidbody>().linearVelocity = foulVel;
             _ball.LostBall();
         }

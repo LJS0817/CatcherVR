@@ -68,9 +68,9 @@ public class PlayerRole
         _movement.init();
     }
 
-    protected virtual bool setMovementTarget(Vector3 pos, Vector3 playerPos, float range, MOVEMENT_TYPE mt)
+    protected virtual bool setMovementTarget(Vector3 pos, Vector3 playerPos, float range, MOVEMENT_TYPE mt, float delay = -1f)
     {
-        return _movement.SetTarget(pos, playerPos, range, mt);
+        return _movement.SetTarget(pos, playerPos, range, mt, delay);
     }
 
     public virtual void BallEventListener(Vector3 playerPos, Vector3 startPos, Vector3 endPos, Vector3 inc) { }

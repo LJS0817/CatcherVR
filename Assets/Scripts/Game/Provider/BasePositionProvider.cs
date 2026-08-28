@@ -70,9 +70,20 @@ public class BasePositionProvider : MonoBehaviour
 
     public BASE_TYPE GetNextBase(BASE_TYPE idx)
     {
-        if (idx == BASE_TYPE.E_SELF) return BASE_TYPE.E_FIRST_BASE;
-        else if(idx != BASE_TYPE.E_HOME_BASE) return idx + 1;
-        return idx;
+        switch (idx)
+        {
+            case BASE_TYPE.E_SELF:
+            case BASE_TYPE.E_HOME_BASE:
+                return BASE_TYPE.E_FIRST_BASE;
+            case BASE_TYPE.E_FIRST_BASE:
+                return BASE_TYPE.E_SECOND_BASE;
+            case BASE_TYPE.E_SECOND_BASE:
+                return BASE_TYPE.E_THIRD_BASE;
+            case BASE_TYPE.E_THIRD_BASE:
+                return BASE_TYPE.E_HOME_BASE;
+            default:
+                return BASE_TYPE.E_FIRST_BASE;
+        }
     }
 
     void setBaseState(BASE_TYPE i, char dS, char aS)
@@ -96,6 +107,42 @@ public class BasePositionProvider : MonoBehaviour
         if (val >= 20) return (PLAYER_TYPE)(val - 20);
         if (val >= 10) return (PLAYER_TYPE)(val - 10);
         return (PLAYER_TYPE)val;
+    }
+
+    public bool IsPlayerOnBase(PLAYER_TYPE pType)
+    {
+        for (int i = 0; i < 3; i++) // 1루, 2루, 3루
+        {
+            BASE_TYPE baseType = (BASE_TYPE)(i + 2);
+            char stateChar = GetAttckerBaseState(baseType);
+            if (stateChar != DEFAULT_CHAR)
+            {
+                PLAYER_TYPE occupant = GetAttackerPlayerType(stateChar);
+                if (occupant == pType) return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 해당 베이스가 포스 아웃(Force Play)이 가능한 상태인지 판별
+    /// 1루: 타자 주자가 무조건 1루로 뛰므로 항상 포스
+    /// 2루, 3루, 홈: 뒤에서 주자가 밀려오고 있는 상태(공격팀 주자가 해당 베이스를 향해 진루 중)면 포스
+    /// </summary>
+    public bool IsForcePlayBase(BASE_TYPE targetBase)
+    {
+        if (targetBase == BASE_TYPE.E_FIRST_BASE) return true;
+
+        Team attackTeam = GamePlayerProvider.provider != null ? GamePlayerProvider.provider.AttackTeam : null;
+        if (attackTeam != null)
+        {
+            BaseballPlayer incomingRunner = attackTeam.GetRunnerHeadingToBase(targetBase);
+            if (incomingRunner != null && incomingRunner.GetRole() is Attacker att)
+            {
+                return att.IsOnBaseOrRunning;
+            }
+        }
+        return false;
     }
 
     /// <summary>

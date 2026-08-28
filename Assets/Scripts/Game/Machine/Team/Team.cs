@@ -24,6 +24,15 @@ public class Team : MonoBehaviour
         return _players[(int)type].GetItem();
     }
 
+    public BaseballPlayer GetCurrentBatter()
+    {
+        if (_players != null && _attackNum >= 0 && _attackNum < _players.Count)
+        {
+            return _players[_attackNum];
+        }
+        return null;
+    }
+
     public BaseballPlayer GetFielderCoveringBase(Transform targetBase)
     {
         if (targetBase == null) return null;
@@ -63,36 +72,49 @@ public class Team : MonoBehaviour
     public BaseballPlayer GetBestFielderForCatch(Vector3 landPos)
     {
         BaseballPlayer best = null;
-        float minDist = float.MaxValue;
+        float bestScore = float.MaxValue;
         
-        bool isOutfieldHit = landPos.z > 25f;
+        Vector3 homePos = (BasePositionProvider.provider != null) ? BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_HOME_BASE) : Vector3.zero;
 
         for(int i = 0; i < _players.Count; i++)
         {
             if (_players[i] == null || !_players[i].gameObject.activeSelf) continue;
-            // 공격수인 경우 제외 (투수는 예외적으로 투구 후 수비하므로 포함)
-            if (_isAttack && i == _attackNum) continue;
-            if (!_isAttack && i == _attackNum) continue;
+            if (i == _attackNum) continue;
 
-            // 외야 타구면 외야수만, 내야 타구면 내야수 및 투수만 고려
             PLAYER_TYPE pType = _players[i].Type;
             bool isOutfielder = (pType == PLAYER_TYPE.E_LEFT_FILED || pType == PLAYER_TYPE.E_CENTER_FIELD || pType == PLAYER_TYPE.E_RIGHT_FILED);
 
-            // 거리 기반으로 최적의 수비수를 찾도록 제한을 완화 (내/외야 경계에서 애매한 타구 처리)
             float dist = Vector3.Distance(_players[i].transform.position, landPos);
             
-            // 외야수인 경우 거리에 어드밴티지를 주어 우선권을 가짐 (유저 피드백: "완전 애매하다면 외야수")
-            if (isOutfielder) dist -= 3.0f; 
+            // 존 기반 우선도 계산
+            DefenseZone zone = _players[i].GetDefenseZone();
+            float zonePriority = (zone != null) ? zone.GetPriority(landPos, homePos) : 0f;
 
-            if(dist < minDist) {
-                minDist = dist;
+            // 스코어 = 거리 - (존 우선도 보너스)
+            // 존 안에 있으면 큰 보너스를 받아 스코어가 낮아짐 (낮을수록 좋음)
+            float score = dist - (zonePriority * 30f);
+            
+            // 외야수 어드밴티지 (경계 타구 시 외야수 우선)
+            if (isOutfielder) score -= 3.0f;
+
+            if(score < bestScore) {
+                bestScore = score;
                 best = _players[i];
             }
         }
         return best;
     }
 
+    /// <summary>기존 호환용 (BATTED_BALL_TYPE 없이 호출)</summary>
     public void AssignDefensiveRoles(Vector3 landPos)
+    {
+        AssignDefensiveRoles(landPos, BATTED_BALL_TYPE.GROUND_BALL);
+    }
+
+    /// <summary>
+    /// 존 기반 역할 분배 (타구 유형 고려)
+    /// </summary>
+    public void AssignDefensiveRoles(Vector3 landPos, BATTED_BALL_TYPE ballType)
     {
         if (_isAttack) return; // 수비 팀일 때만 동작
 
@@ -104,7 +126,7 @@ public class Team : MonoBehaviour
             _players[i].DefRole = DEFENSIVE_ROLE.IDLE;
         }
 
-        // 2. Chaser 결정
+        // 2. Chaser 결정 (존 기반)
         BaseballPlayer chaser = GetBestFielderForCatch(landPos);
         if (chaser != null)
         {
@@ -114,14 +136,14 @@ public class Team : MonoBehaviour
 
         bool isOutfieldHit = landPos.z > 25f;
 
-        // 3. 역할 분배
+        // 3. 역할 분배 (타구 유형 전달)
         for (int i = 0; i < _players.Count; i++)
         {
             if (_players[i] == null || !_players[i].gameObject.activeSelf) continue;
             if (i == _attackNum || _players[i] == chaser) continue;
 
-            // 각 포지션 클래스(ShortStop, SecondBase 등)에서 오버라이드한 고유 역할(예: 베이스 커버) 우선 할당
-            if (_players[i].AssignSpecialRole(chaser, landPos)) continue;
+            // 각 포지션 클래스에서 타구 유형별 고유 역할 우선 할당
+            if (_players[i].AssignSpecialRole(chaser, landPos, ballType)) continue;
 
             PLAYER_TYPE pType = _players[i].Type;
             bool isOutfielder = (pType == PLAYER_TYPE.E_LEFT_FILED || pType == PLAYER_TYPE.E_CENTER_FIELD || pType == PLAYER_TYPE.E_RIGHT_FILED);
@@ -191,9 +213,89 @@ public class Team : MonoBehaviour
 
     public void ChangeAttacker()
     {
-        setActivePlayer(_attackNum, false);
+        // 1. 이전 타자들 중 아웃되거나 득점한 선수만 끄고, 출루한 주자는 베이스 위에 그대로 남겨둠!
+        if (_players != null)
+        {
+            for (int i = 0; i < _players.Count; i++)
+            {
+                if (i != _attackNum && _players[i] != null && _players[i].gameObject.activeSelf)
+                {
+                    // 출루/주루 중이 아닌 선수만 비활성화
+                    if (!_players[i].IsActiveRunner)
+                    {
+                        _players[i].ExitGame();
+                    }
+                }
+            }
+
+            // 직전 타자 체크
+            if (_attackNum >= 0 && _attackNum < _players.Count)
+            {
+                BaseballPlayer prevBatter = _players[_attackNum];
+                if (prevBatter != null && !prevBatter.IsActiveRunner)
+                {
+                    prevBatter.ExitGame();
+                }
+            }
+        }
+
+        // 2. 다음 타순으로 전환하여 새 타자 타석 등장
         _attackNum = (_attackNum + 1) % 9;
-        setActivePlayer(_attackNum, true);
+        if (_players != null && _attackNum >= 0 && _attackNum < _players.Count)
+        {
+            _players[_attackNum].JoinGame();
+        }
+    }
+
+    /// <summary>
+    /// 새 타자가 타격했을 때, 이미 출루해 있던 주자들에게 진루 명령
+    /// </summary>
+    public void NotifyRunnersToAdvance(Vector3 hitLandPos, BaseballPlayer currentBatter)
+    {
+        if (_players == null) return;
+
+        for (int i = 0; i < _players.Count; i++)
+        {
+            if (_players[i] != null && _players[i] != currentBatter && _players[i].gameObject.activeSelf)
+            {
+                if (_players[i].GetRole() is Attacker runner)
+                {
+                    runner.AdvanceRunnerOnNextHit(hitLandPos);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 특정 베이스를 향해 달려가고 있는 공격팀 주자 검색 (포스 아웃 판정용)
+    /// </summary>
+    public BaseballPlayer GetRunnerHeadingToBase(BASE_TYPE targetBase)
+    {
+        if (_players == null) return null;
+
+        for (int i = 0; i < _players.Count; i++)
+        {
+            if (_players[i] != null && _players[i].gameObject.activeSelf)
+            {
+                if (_players[i].GetRole() is Attacker runner)
+                {
+                    if (runner.IsOnBaseOrRunning && runner.TargetBase == targetBase)
+                    {
+                        return _players[i];
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    public BaseballPlayer GetPlayer(PLAYER_TYPE type)
+    {
+        if (_players != null && (int)type >= 0 && (int)type < _players.Count)
+        {
+            return _players[(int)type];
+        }
+        return null;
     }
 
     public void ChangeRole(bool isAttacker)
@@ -222,6 +324,9 @@ public class Team : MonoBehaviour
 
     public void ResetDefense()
     {
+        // ★ 중요: 공격팀인 경우 수비수 위치를 리셋하지 않음 (출루 주자 위치 보존)
+        if (_isAttack) return;
+
         for (int i = 0; i < _players.Count; i++)
         {
             if (_players[i] != null && _players[i].gameObject.activeSelf)
@@ -239,8 +344,42 @@ public class Team : MonoBehaviour
 
     public void PlayerOut(PLAYER_TYPE t)
     {
-        if ((int)t == _attackNum || t == PLAYER_TYPE.E_PITCHER) ChangeAttacker();
-        else setActivePlayer((int)t, false);
+        // 아웃된 선수는 즉시 비활성화(ExitGame) 및 플래그 해제
+        if (_players != null && (int)t >= 0 && (int)t < _players.Count)
+        {
+            BaseballPlayer outPlayer = _players[(int)t];
+            if (outPlayer != null)
+            {
+                if (outPlayer.GetRole() is Attacker att)
+                {
+                    att.OnOut();
+                }
+                else
+                {
+                    outPlayer.ExitGame();
+                }
+            }
+        }
+
+        // 아웃된 선수가 있던 베이스 상태 정리
+        if (BasePositionProvider.provider != null)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                BASE_TYPE bType = (BASE_TYPE)(i + 2);
+                char stateChar = BasePositionProvider.provider.GetAttckerBaseState(bType);
+                if (stateChar != '_' && BasePositionProvider.provider.GetAttackerPlayerType(stateChar) == t)
+                {
+                    BasePositionProvider.provider.SetAttackerBaseState(bType, -1);
+                }
+            }
+        }
+
+        // 현재 타자나 투수 아웃 시 다음 타자로 교체
+        if ((int)t == _attackNum || t == PLAYER_TYPE.E_PITCHER)
+        {
+            ChangeAttacker();
+        }
     }
 
     public void init(Transform pool, Ball ball, bool isAttacker)

@@ -33,9 +33,11 @@ public class Ball : MonoBehaviour
     Vector3 _flyDirection;
 
     string _contactName;
+    Vector3 _initScale;
 
     private void Awake()
     {
+        _initScale = transform.localScale;
         _rig = GetComponent<Rigidbody>();
         _collider = GetComponent<Collider>();
         _calc = GetComponent<BallProjectileCalculator>();
@@ -65,6 +67,7 @@ public class Ball : MonoBehaviour
         _flyDirection = Vector3.zero;
         _playerThrows = false;
         _isSwingMiss = false;
+        _isBattedBall = false;
         //_aiThrows = false;
 
         _calc.init();
@@ -135,11 +138,18 @@ public class Ball : MonoBehaviour
                 _contact = false;
                 predictBallPath(false);
             }
-            if (collision.gameObject.name.Contains("bat"))
+            if (collision.gameObject.name.ToLower().Contains("bat"))
             {
-                _isBattedBall = true;
-                _rig.linearVelocity *= 3f;
-                LostBall();
+                // Bat 컴포넌트가 없는 경우에만 기본 처리
+                if (collision.gameObject.GetComponent<Bat>() == null)
+                {
+                    _isBattedBall = true;
+                    LostBall();
+                    if (GamePlayerProvider.provider != null)
+                    {
+                        GamePlayerProvider.provider.NotifyBatterHit();
+                    }
+                }
             }
         }
     }
@@ -178,12 +188,15 @@ public class Ball : MonoBehaviour
         ResetVelocity();
         changeState(true, parent);
         transform.localPosition = Vector3.zero;
+        transform.localScale = _initScale;
         IsFoul = false; // 잡힌 공은 파울(땅에 닿는 데드볼) 처리를 취소함
+        _isBattedBall = false;
     }
 
     public void LostBall()
     {
         changeState(false, _ballPool);
+        transform.localScale = _initScale;
         _contact = false;
         if(!_aiThrows)
         {
@@ -202,7 +215,11 @@ public class Ball : MonoBehaviour
     {
         _rig.isKinematic = hold;
         _collider.enabled = !hold;
-        transform.parent = parent;
+        if (parent != null)
+        {
+            transform.SetParent(parent);
+            transform.localScale = _initScale;
+        }
     }
 
     public Vector3 GetPosition()
@@ -245,8 +262,14 @@ public class Ball : MonoBehaviour
     public void ResetPosition(Vector3 pos)
     {
         ResetVelocity();
+        if (_ballPool != null)
+        {
+            transform.SetParent(_ballPool);
+        }
         transform.position = pos;
+        transform.localScale = _initScale;
         _aiThrows = true;
+        _isBattedBall = false;
         LostBall();
     }
 

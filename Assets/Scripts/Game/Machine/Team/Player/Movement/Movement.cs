@@ -3,26 +3,23 @@ using UnityEngine;
 public enum MOVEMENT_TYPE
 {
     E_STAY,
-
-    E_END_POINT,
-    E_JUMP,
-    E_PREDICT_PATH,
-    E_FOLLOW_BALL,
-
     E_BASE,
-    E_PRE_RUN,
     E_RUN,
+    E_PREDICT_PATH,
+    E_FOLLOW_BALL
 }
 
 public class Movement
 {
     protected Vector3 _target;
     protected MOVEMENT_TYPE _type;
-    
-    // 관성 및 물리 기반 이동 변수
-    protected Vector3 _currentVelocity;
-    protected float _delayTimer;
-    protected bool _isDelaying;
+
+    // 관성 이동을 위한 현재 속도 벡터
+    protected Vector3 _currentVelocity = Vector3.zero;
+
+    // 첫 발 딜레이(지연 시간) 타이머
+    protected float _delayTimer = 0f;
+    protected bool _isDelaying = false;
 
     public virtual void init()
     {
@@ -41,7 +38,18 @@ public class Movement
 
     public virtual bool SetTarget(Vector3 target, Vector3 myPos, float range, MOVEMENT_TYPE mT) 
     { 
-        return false; 
+        return SetTarget(target, myPos, range, mT, -1f); 
+    }
+
+    public virtual bool SetTarget(Vector3 target, Vector3 myPos, float range, MOVEMENT_TYPE mT, float customDelay) 
+    { 
+        setTarget(target);
+        SetMovementType(mT);
+        if (customDelay > 0f)
+        {
+            SetTargetWithDelay(target, customDelay);
+        }
+        return isMoving(); 
     }
 
     protected void setTarget(Vector3 vec) 
@@ -81,6 +89,7 @@ public class Movement
         }
 
         Vector3 desiredDirection = (target - myPos);
+        desiredDirection.y = 0f;
         float distance = desiredDirection.magnitude;
         
         if (distance > 0.01f)

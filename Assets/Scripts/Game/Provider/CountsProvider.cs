@@ -19,6 +19,10 @@ public class CountsProvider : MonoBehaviour
     public TMP_Text CountsUI;
     public Transform StrikeZone;
 
+    public int CurrentInning { get; private set; } = 1;
+    public int TeamAScore { get; private set; } = 0;
+    public int TeamBScore { get; private set; } = 0;
+
     public static CountsProvider provider
     {
         get
@@ -34,7 +38,15 @@ public class CountsProvider : MonoBehaviour
         if (_provider != null && _provider == this) Destroy(this.gameObject);
         else _provider = this;
 
-        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_STRIKE) + "-" + GetCount(COUNT_TYPE.E_BALL) + "</b>");
+        updateUI();
+    }
+
+    void updateUI()
+    {
+        if (CountsUI != null)
+        {
+            CountsUI.SetText($"<b>{CurrentInning}회초</b>   <b>{GetCount(COUNT_TYPE.E_OUT)}</b><size=80%>Out</size>   <b>{GetCount(COUNT_TYPE.E_STRIKE)}-{GetCount(COUNT_TYPE.E_BALL)}</b>");
+        }
     }
 
     public byte GetCount(COUNT_TYPE t) { return _counts[(byte)t]; }
@@ -54,23 +66,39 @@ public class CountsProvider : MonoBehaviour
 
     void setCount(COUNT_TYPE t, byte v, ClippingEvent e)
     {
-        if (t == COUNT_TYPE.E_FOUL) return; // Should not reach here, but just in case
+        if (t == COUNT_TYPE.E_FOUL) return;
         _counts[(int)t] = v;
         ClippingCount(t, e);
         if (e != null) e();
-        CountsUI.SetText("<b>" + GetCount(COUNT_TYPE.E_OUT) + "</b><size=80%>Out</size>   <b>" + GetCount(COUNT_TYPE.E_STRIKE) + "-" + GetCount(COUNT_TYPE.E_BALL) + "</b>");
+        updateUI();
     }
 
     public void ResetAtBatCounts()
     {
-        setCount(COUNT_TYPE.E_BALL, 0, null);
-        setCount(COUNT_TYPE.E_STRIKE, 0, null);
+        _counts[(int)COUNT_TYPE.E_BALL] = 0;
+        _counts[(int)COUNT_TYPE.E_STRIKE] = 0;
+        updateUI();
     }
 
     public void ResetInningCounts()
     {
-        ResetAtBatCounts();
-        setCount(COUNT_TYPE.E_OUT, 0, null);
+        _counts[(int)COUNT_TYPE.E_BALL] = 0;
+        _counts[(int)COUNT_TYPE.E_STRIKE] = 0;
+        _counts[(int)COUNT_TYPE.E_OUT] = 0;
+        updateUI();
+    }
+
+    public void NextInning()
+    {
+        CurrentInning++;
+        ResetInningCounts();
+    }
+
+    public void AddSimulatedRuns(int teamARuns, int teamBRuns)
+    {
+        TeamAScore += teamARuns;
+        TeamBScore += teamBRuns;
+        updateUI();
     }
 
     public void ClippingCount(COUNT_TYPE t, ClippingEvent e)
@@ -90,7 +118,6 @@ public class CountsProvider : MonoBehaviour
         else if (t == COUNT_TYPE.E_OUT && GetCount(t) > 2)
         {
             // 3 Outs = Inning Change
-            ResetInningCounts();
             if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.ChangeInning();
         }
     }
