@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using UnityEngine;
+using DG.Tweening;
 
 public class Defencer : PlayerRole
 {
@@ -23,6 +24,16 @@ public class Defencer : PlayerRole
 
     // 포지션별 포구 범위
     float _catchRange = 1.5f;
+
+    // ====== DOTween 송구 모션 변수 ======
+    Transform _gloveHand;
+    Transform _throwHand;
+    Vector3 _initGloveHandLocalPos;
+    Quaternion _initGloveHandLocalRot;
+    Vector3 _initThrowHandLocalPos;
+    Quaternion _initThrowHandLocalRot;
+    bool _isThrowingMotion = false;
+    Sequence _throwSequence;
 
     // ====== 수비 존 시스템 ======
     DefenseZone _defenseZone;
@@ -67,12 +78,57 @@ public class Defencer : PlayerRole
             _homePos = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_HOME_BASE);
         }
 
+        // 글러브 손(RightHand) 및 던지는 맨손(LeftHand) 캐싱
+        Transform playerObj = _my.childCount > 0 ? _my.GetChild(0) : null;
+        Transform shoulder = (playerObj != null && playerObj.childCount > 1) ? playerObj.GetChild(1) : null;
+        if (shoulder != null)
+        {
+            if (shoulder.childCount > 0) _gloveHand = shoulder.GetChild(0);
+            if (shoulder.childCount > 1) _throwHand = shoulder.GetChild(1);
+        }
+
+        if (_gloveHand == null || _throwHand == null)
+        {
+            foreach (var tr in _my.GetComponentsInChildren<Transform>(true))
+            {
+                if (tr.name.Contains("RightHand") && _gloveHand == null) _gloveHand = tr;
+                if (tr.name.Contains("LeftHand") && _throwHand == null) _throwHand = tr;
+            }
+        }
+
+        if (_gloveHand != null)
+        {
+            _initGloveHandLocalPos = _gloveHand.localPosition;
+            _initGloveHandLocalRot = _gloveHand.localRotation;
+        }
+        if (_throwHand != null)
+        {
+            _initThrowHandLocalPos = _throwHand.localPosition;
+            _initThrowHandLocalRot = _throwHand.localRotation;
+        }
+
         if (_base != BASE_TYPE.E_SELF) BasePositionProvider.provider.SetDefencerBaseState(_base, (int)t + 1);
     }
 
     public override void ResetRole()
     {
         base.ResetRole();
+        _throwSequence?.Kill();
+        _isThrowingMotion = false;
+        if (_gloveHand != null)
+        {
+            _gloveHand.localPosition = _initGloveHandLocalPos;
+            _gloveHand.localRotation = _initGloveHandLocalRot;
+        }
+        if (_throwHand != null)
+        {
+            _throwHand.localPosition = _initThrowHandLocalPos;
+            _throwHand.localRotation = _initThrowHandLocalRot;
+        }
+        if (_controller != null && _item != null)
+        {
+            _controller.SetItemPoint(_item);
+        }
         _catchType = CATCH_TYPE.NONE;
         _hasBall = false;
         _hasJumped = false;
@@ -507,8 +563,6 @@ public class Defencer : PlayerRole
 
     void baseCover()
     {
-        if (_type == PLAYER_TYPE.E_PITCHER) return; // 투수는 베이스 커버로 마운드를 이탈하지 않음
-
         if (!getMovement().CompareMovementType(MOVEMENT_TYPE.E_BASE) && _base != BASE_TYPE.E_SELF)
             setMovementTarget(BasePositionProvider.provider.GetBasePosition(_base), _my.position, -1f, MOVEMENT_TYPE.E_BASE);
     }
@@ -527,6 +581,23 @@ public class Defencer : PlayerRole
 
     void catchBall()
     {
+        _throwSequence?.Kill();
+        _isThrowingMotion = false;
+        if (_gloveHand != null)
+        {
+            _gloveHand.localPosition = _initGloveHandLocalPos;
+            _gloveHand.localRotation = _initGloveHandLocalRot;
+        }
+        if (_throwHand != null)
+        {
+            _throwHand.localPosition = _initThrowHandLocalPos;
+            _throwHand.localRotation = _initThrowHandLocalRot;
+        }
+        if (_controller != null && _item != null)
+        {
+            _controller.SetItemPoint(_item);
+        }
+
         _item.position = _ball.GetPosition();
         _ball.GrabBall(_item);
         _hasBall = true;
@@ -547,16 +618,26 @@ public class Defencer : PlayerRole
             // 타구가 땅에 닿았거나 송구를 받은 상태
             _ball.SetBattedBall(false);
             
-            // 투수가 공을 넘겨받았을 때 (인플레이 타격 플레이 종료 -> 다음 타석 준비)
+            // 투수가 공을 잡았을 때: 선행 주자를 처리할 수 있으면 그 베이스에 던지고, 아니면 1루에 던져서 아웃
             if (_type == PLAYER_TYPE.E_PITCHER)
             {
-                // 다음 타자 교체 (출루한 주자는 베이스에 그대로 남음)
-                if (GamePlayerProvider.provider != null)
+                Transform throwTarget = BasePositionProvider.provider.GetThrowTarget(_my, _type);
+                
+                // 던질 곳이 있다면(주자가 달리고 있는 베이스가 있으면) 송구 모드로 전환
+                if (throwTarget != null && throwTarget != _my)
                 {
-                    Team attackTeam = GamePlayerProvider.provider.AttackTeam;
-                    if (attackTeam != null)
+                    _catchType = CATCH_TYPE.NONE; // throwBall()이 다음 프레임에서 처리
+                }
+                else
+                {
+                    // 아무 주자도 없거나 더 이상 던질 곳이 없으면 플레이 종료 -> 다음 타자 교체
+                    if (GamePlayerProvider.provider != null)
                     {
-                        attackTeam.ChangeAttacker();
+                        Team attackTeam = GamePlayerProvider.provider.AttackTeam;
+                        if (attackTeam != null)
+                        {
+                            attackTeam.ChangeAttacker();
+                        }
                     }
                 }
             }
@@ -580,6 +661,9 @@ public class Defencer : PlayerRole
 
     void PlayerOut(BASE_TYPE baseType, char playerState)
     {
+        _throwSequence?.Kill();
+        _isThrowingMotion = false;
+
         CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, () => {
             GamePlayerProvider.provider.PlayerOut(BasePositionProvider.provider.GetAttackerPlayerType(playerState)); 
         });
@@ -603,7 +687,7 @@ public class Defencer : PlayerRole
 
     void throwBall()
     {
-        if(_hasBall)
+        if(_hasBall && !_isThrowingMotion)
         {
             Transform targetTransform = BasePositionProvider.provider.GetThrowTarget(_my, _type);
             
@@ -671,62 +755,181 @@ public class Defencer : PlayerRole
 
             if (targetTransform != null && targetTransform != _my)
             {
-                // 타겟 방향으로 부드럽게 몸을 돌림 (최단 경로 회전)
+                // 타겟 방향으로 몸 정렬
                 Vector3 lookDir = targetTransform.position - _my.position;
                 lookDir.y = 0;
-                
                 if (lookDir.sqrMagnitude > 0.001f)
                 {
-                    Quaternion targetRot = Quaternion.LookRotation(lookDir);
-                    // RotateTowards 대신 Slerp를 사용하여 항상 최단 경로로 회전 (360도 회전 버그 방지)
-                    float rotSpeed = IsInfielder ? 15f : 12f;
-                    _my.rotation = Quaternion.Slerp(_my.rotation, targetRot, Time.deltaTime * rotSpeed);
+                    _my.rotation = Quaternion.LookRotation(lookDir);
                 }
 
-                _readyToThrow += Time.deltaTime;
-                
-                // 내야수는 빠르게 퀵 스로우(0.15~0.25초), 외야수는 크로우 홉 딜레이(0.5~0.7초) 적용
-                float minThrowDelay = IsInfielder ? 0.15f : 0.5f;
-                float maxThrowDelay = IsInfielder ? 0.25f : 0.7f;
-                float angleThreshold = 10.0f;
-                
-                if (_readyToThrow >= maxThrowDelay || (_readyToThrow >= minThrowDelay && Vector3.Angle(_my.forward, lookDir.normalized) < angleThreshold))
-                {
-                    _readyToThrow = 0f;
-                    _hasBall = false;
-                    
-                    // 송구 직전 몸을 타겟으로 완전 정렬
-                    if (lookDir.sqrMagnitude > 0.001f)
-                    {
-                        _my.rotation = Quaternion.LookRotation(lookDir);
-                    }
-                    
-                    // 정확하게 타겟을 향해 공이 날아가도록 손(item)의 방향을 타겟으로 강제 정렬
-                    if (_item != null)
-                    {
-                        Vector3 throwDir = targetTransform.position - _item.position;
-                        float dist = throwDir.magnitude;
-                        
-                        // 거리가 15m 이상이면 상향각을 주어 포물선(Parabolic) 궤적을 그리게 함
-                        if (dist > 15f)
-                        {
-                            throwDir.y += (dist - 15f) * 0.15f; 
-                        }
-                        
-                        _item.rotation = Quaternion.LookRotation(throwDir);
-                    }
-
-                    GetController().Action(targetTransform);
-                    if (usingDummy)
-                    {
-                        GameObject.Destroy(targetTransform.gameObject, 3.0f);
-                    }
-                }
+                StartThrowSequence(targetTransform, usingDummy);
             }
             else
             {
-                _hasBall = false;
+                // 던질 곳이 없을 때 (투수가 공을 들고 있으나 주자가 없거나)
+                if (_type == PLAYER_TYPE.E_PITCHER)
+                {
+                    // 투수가 공을 들고 있으나 던질 타겟이 없으면 플레이 종료
+                    _hasBall = false;
+                    if (GamePlayerProvider.provider != null)
+                    {
+                        Team attackTeam = GamePlayerProvider.provider.AttackTeam;
+                        if (attackTeam != null)
+                        {
+                            attackTeam.ChangeAttacker();
+                        }
+                    }
+                }
+                else
+                {
+                    _hasBall = false;
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// DOTween을 활용한 사실적인 야구 송구 모션 (글러브에서 볼 빼기 -> 테이크백 -> 릴리스 -> 팔로우스루)
+    /// </summary>
+    void StartThrowSequence(Transform targetTransform, bool usingDummy)
+    {
+        if (_isThrowingMotion || targetTransform == null) return;
+        _isThrowingMotion = true;
+        _throwSequence?.Kill();
+
+        if (_gloveHand == null || _throwHand == null)
+        {
+            // 손 Transform이 없는 경우의 안전한 즉시 송구 폴백
+            ExecuteDirectThrow(targetTransform, usingDummy);
+            _isThrowingMotion = false;
+            return;
+        }
+
+        // 포지션별 송구 모션 시간 (내야수 퀵 스로우 0.38초, 외야수 크로우 홉 0.65초, 투수 0.45초)
+        float baseDuration = IsInfielder ? 0.38f : (IsOutfielder ? 0.65f : 0.45f);
+        float tTransfer = baseDuration * 0.32f; // 글러브에서 공 꺼내기 (볼 빼기)
+        float tCock = baseDuration * 0.35f;     // 테이크백 (뒤로 젖히기)
+        float tRelease = baseDuration * 0.18f;  // 전방 릴리스 스윙
+        float tFollow = baseDuration * 0.25f;   // 팔로우스루 및 복귀
+
+        _throwSequence = DOTween.Sequence();
+
+        // -------------------------------------------------------------
+        // Phase 1: 글러브로 던지는 맨손(LeftHand)이 다가가서 공을 잡음 (Transfer)
+        // -------------------------------------------------------------
+        Vector3 chestGlovePos = new Vector3(0.4f, -0.7f, 0.7f);
+        _throwSequence.Append(_gloveHand.DOLocalMove(chestGlovePos, tTransfer).SetEase(Ease.OutQuad));
+        _throwSequence.Join(_gloveHand.DOLocalRotate(new Vector3(-20f, 35f, 0f), tTransfer).SetEase(Ease.OutQuad));
+
+        Vector3 chestThrowPos = new Vector3(0.35f, -0.7f, 0.7f);
+        _throwSequence.Join(_throwHand.DOLocalMove(chestThrowPos, tTransfer).SetEase(Ease.OutQuad));
+        _throwSequence.Join(_throwHand.DOLocalRotate(new Vector3(40f, -40f, 0f), tTransfer).SetEase(Ease.OutQuad));
+
+        // 공이 글러브에서 맨손으로 이동 (Transfer Point)
+        _throwSequence.AppendCallback(() =>
+        {
+            if (_ball != null && _hasBall && _throwHand != null)
+            {
+                _ball.GrabBall(_throwHand);
+            }
+        });
+
+        // -------------------------------------------------------------
+        // Phase 2: 테이크백 & 와인드업 (Cocking)
+        // -------------------------------------------------------------
+        Vector3 cockPos = new Vector3(-1.6f, 0.5f, -0.7f);
+        _throwSequence.Append(_throwHand.DOLocalMove(cockPos, tCock).SetEase(Ease.InOutQuad));
+        _throwSequence.Join(_throwHand.DOLocalRotate(new Vector3(-65f, 15f, 25f), tCock).SetEase(Ease.InOutQuad));
+
+        Vector3 aimGlovePos = new Vector3(0.8f, -0.3f, 1.2f);
+        _throwSequence.Join(_gloveHand.DOLocalMove(aimGlovePos, tCock).SetEase(Ease.InOutQuad));
+        _throwSequence.Join(_gloveHand.DOLocalRotate(new Vector3(10f, -15f, 0f), tCock).SetEase(Ease.InOutQuad));
+
+        // -------------------------------------------------------------
+        // Phase 3: 전방 스윙 및 공 릴리스 (Release)
+        // -------------------------------------------------------------
+        Vector3 releasePos = new Vector3(-0.3f, 0.4f, 1.4f);
+        _throwSequence.Append(_throwHand.DOLocalMove(releasePos, tRelease).SetEase(Ease.InQuad));
+        _throwSequence.Join(_throwHand.DOLocalRotate(new Vector3(55f, 0f, 0f), tRelease).SetEase(Ease.InQuad));
+
+        _throwSequence.AppendCallback(() =>
+        {
+            if (_hasBall && targetTransform != null)
+            {
+                _hasBall = false;
+
+                Vector3 finalLookDir = targetTransform.position - _my.position;
+                finalLookDir.y = 0;
+                if (finalLookDir.sqrMagnitude > 0.001f)
+                {
+                    _my.rotation = Quaternion.LookRotation(finalLookDir);
+                }
+
+                Transform throwOrigin = _throwHand != null ? _throwHand : _item;
+                Vector3 throwDir = targetTransform.position - throwOrigin.position;
+                float dist = throwDir.magnitude;
+
+                if (dist > 15f)
+                {
+                    throwDir.y += (dist - 15f) * 0.15f;
+                }
+
+                throwOrigin.rotation = Quaternion.LookRotation(throwDir);
+
+                if (_controller != null)
+                {
+                    _controller.SetItemPoint(throwOrigin);
+                    _controller.Action(targetTransform);
+                    _controller.SetItemPoint(_item);
+                }
+
+                if (usingDummy && targetTransform != null)
+                {
+                    GameObject.Destroy(targetTransform.gameObject, 3.0f);
+                }
+            }
+        });
+
+        // -------------------------------------------------------------
+        // Phase 4: 팔로우스루 및 수비 기본 자세 복귀 (Follow-Through & Return)
+        // -------------------------------------------------------------
+        Vector3 followPos = new Vector3(0.8f, -1.3f, 0.4f);
+        _throwSequence.Append(_throwHand.DOLocalMove(followPos, tFollow * 0.4f).SetEase(Ease.OutQuad));
+
+        _throwSequence.Append(_throwHand.DOLocalMove(_initThrowHandLocalPos, tFollow * 0.6f).SetEase(Ease.OutQuad));
+        _throwSequence.Join(_throwHand.DOLocalRotate(_initThrowHandLocalRot.eulerAngles, tFollow * 0.6f).SetEase(Ease.OutQuad));
+        _throwSequence.Join(_gloveHand.DOLocalMove(_initGloveHandLocalPos, tFollow * 0.6f).SetEase(Ease.OutQuad));
+        _throwSequence.Join(_gloveHand.DOLocalRotate(_initGloveHandLocalRot.eulerAngles, tFollow * 0.6f).SetEase(Ease.OutQuad));
+
+        _throwSequence.OnComplete(() =>
+        {
+            _isThrowingMotion = false;
+        });
+
+        _throwSequence.OnKill(() =>
+        {
+            _isThrowingMotion = false;
+        });
+    }
+
+    void ExecuteDirectThrow(Transform targetTransform, bool usingDummy)
+    {
+        _hasBall = false;
+        if (_item != null && targetTransform != null)
+        {
+            Vector3 throwDir = targetTransform.position - _item.position;
+            float dist = throwDir.magnitude;
+            if (dist > 15f) throwDir.y += (dist - 15f) * 0.15f;
+            _item.rotation = Quaternion.LookRotation(throwDir);
+        }
+        if (_controller != null)
+        {
+            _controller.Action(targetTransform);
+        }
+        if (usingDummy && targetTransform != null)
+        {
+            GameObject.Destroy(targetTransform.gameObject, 3.0f);
         }
     }
 

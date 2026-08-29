@@ -17,4 +17,9 @@ public class RoleController
     public virtual void Action(Transform tran) { }
 
     public virtual void ResetValue(int i=0) { }
+
+    public void SetItemPoint(Transform point)
+    {
+        _itemPoint = point;
+    }
 }

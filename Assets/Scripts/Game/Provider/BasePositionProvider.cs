@@ -298,18 +298,36 @@ public class BasePositionProvider : MonoBehaviour
         // 선행 주자 태그 아웃 가능하면 시도
         if (leadRunnerTarget != null) return leadRunnerTarget;
         
-        // 아무 주자도 뛰지 않거나 마땅한 타겟이 없으면 투수에게 반환
+        // 아무 주자도 뛰지 않거나 마땅한 타겟이 없으면...
         if (throwerType == PLAYER_TYPE.E_PITCHER) 
         {
-            return throwerTransform;
+            // 투수가 공을 들고 있을 때: 1루에 주자가 향하고 있는지 확인
+            char firstBaseState = GetAttckerBaseState(BASE_TYPE.E_FIRST_BASE);
+            if (firstBaseState != DEFAULT_CHAR && firstBaseState > '9')
+            {
+                // 타자주자가 1루로 달리고 있다면 1루로 던짐
+                return Bases[getIndex(BASE_TYPE.E_FIRST_BASE)];
+            }
+            return throwerTransform; // 정말 아무도 없으면 자기 자신(=플레이 종료 트리거)
         }
         else
         {
-            // 투수의 Transform을 가져오기 (Team 클래스를 통해)
-            Team team = throwerTransform.parent.GetComponent<Team>();
-            if (team != null)
+            // 수비수가 공을 들고 있을 때: 투수에게 공 반환
+            if (_provider != null)
             {
-                return team.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
+                Team team = null;
+                // 부모에서 Team 컴포넌트 탐색
+                Transform current = throwerTransform;
+                while (current != null)
+                {
+                    team = current.GetComponent<Team>();
+                    if (team != null) break;
+                    current = current.parent;
+                }
+                if (team != null)
+                {
+                    return team.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
+                }
             }
             return Bases[getIndex(BASE_TYPE.E_SECOND_BASE)]; 
         }
