@@ -184,10 +184,19 @@ public class SwingController : RoleController
                         }
                     }
                     
-                    bool willSwing = Random.value < swingChance;
+                    bool willSwing = true; // Random.value < swingChance; (스윙 확률 100%로 고정)
                     
                     // 3. 타이밍 에러(Timing Error) 계산
-                    _timingError = Random.Range(-0.02f, 0.02f);
+                    if (Random.value < 0.5f)
+                    {
+                        // 50% 확률로 헛스윙(Miss)을 유도하는 타이밍 에러 (0.03 이상)
+                        _timingError = Random.value < 0.5f ? Random.Range(0.035f, 0.05f) : Random.Range(-0.05f, -0.035f);
+                    }
+                    else
+                    {
+                        // 나머지 50%는 인플레이 또는 파울
+                        _timingError = Random.Range(-0.02f, 0.02f);
+                    }
                     
                     // 이전 투구(Pitch Sequence) 구속 차이에 의한 타이밍 뺏김
                     if (_prevPitchSpeed > 0)
@@ -205,10 +214,15 @@ public class SwingController : RoleController
                     // 느린 공 연속 투구 적응 (Timing Adaptation)
                     if (_consecutiveSlowPitches >= 2 && isSlowPitch)
                     {
-                        _timingError = 0f; // 느린 공에 완벽히 타이밍이 맞춰짐
+                        _timingError *= 0.5f; // 완벽히 맞추진 않고 오차를 줄여줌
                     }
                     
-                    if (isMeatball) _timingError = 0f; // 실투면 타이밍 완벽 보정
+                    if (isMeatball)
+                    {
+                        // 실투라도 무조건 중앙 완벽한 정타가 아니라,
+                        // 당겨치기/밀어치기 및 다양한 타구 질을 위해 랜덤 타이밍(히트 포인트) 부여
+                        _timingError = Random.Range(-0.014f, 0.014f); 
+                    }
                     
                     // ==========================================
                     
@@ -341,6 +355,7 @@ public class SwingController : RoleController
             float baseSpeed = Mathf.Lerp(16f, 43f, hitQuality);
             float exitSpeed = baseSpeed + Random.Range(-2f, 3f);
             exitSpeed = Mathf.Clamp(exitSpeed, 14f, 46f);
+            exitSpeed *= 0.7f; // 타구 힘 30% 감소
 
             // 4. 3D 타구 속도 벡터 생성 (홈플레이트에서 외야는 Z- 방향)
             float sprayRad = sprayAngleDeg * Mathf.Deg2Rad;
@@ -398,8 +413,13 @@ public class SwingController : RoleController
         my.GetComponent<Animator>().SetFloat("SwingSpeed", animSpeed);
         my.GetComponent<Animator>().SetTrigger("Activate");
 
-        // 실제 공의 궤적으로 타격점 세팅
-        _targetSwingPos = pos;
-        _pool.GetChild(2).position = pos;
+        // 히트 포인트 (스윙 궤적)에 약간의 랜덤 오차 추가 (상하좌우 빗맞음 유도)
+        float hitOffsetX = Random.Range(-0.1f, 0.1f);
+        float hitOffsetY = Random.Range(-0.1f, 0.1f);
+        Vector3 randomHitOffset = new Vector3(hitOffsetX, hitOffsetY, 0);
+
+        // 실제 공의 궤적에 오차를 더해 타격점 세팅
+        _targetSwingPos = pos + randomHitOffset;
+        _pool.GetChild(2).position = _targetSwingPos;
     }
 }

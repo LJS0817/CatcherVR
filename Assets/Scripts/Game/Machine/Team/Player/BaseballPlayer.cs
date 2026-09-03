@@ -6,12 +6,15 @@ public enum PLAYER_TYPE
     E_SECOND_BASE,
     E_SHORT_STOP,
     E_THIRD_BASE,
-    
+
     E_RIGHT_FILED,
     E_CENTER_FIELD,
     E_LEFT_FILED,
 
     E_PITCHER,
+
+    /// <summary>9번째 야수(포수). VR 에서는 플레이어가 맡지만, AI 팀에서는 홈 커버를 담당한다.</summary>
+    E_CATCHER,
 }
 
 public enum BASE_TYPE
@@ -27,48 +30,95 @@ public enum BASE_TYPE
 public enum DEFENSIVE_ROLE
 {
     IDLE,
-    CHASER,
-    BACKUP,
-    BASE_COVER,
-    CUTOFF
+    CHASER,      // 타구 1차 처리자
+    BACKUP,      // 백업 / 트레일
+    BASE_COVER,  // 베이스 커버
+    CUTOFF       // 중계 / 릴레이
 }
 
 public class BaseballPlayer : MonoBehaviour
 {
     protected PLAYER_TYPE _type;
     public PLAYER_TYPE Type => _type;
-    
+
+    // ── 하위 호환용 (기존 코드가 참조) ─────────────────────
     public DEFENSIVE_ROLE DefRole = DEFENSIVE_ROLE.IDLE;
     public Vector3 RoleTargetPosition = Vector3.zero;
+
+    // ── 새 수비 시스템 ───────────────────────────────────
+    FieldAssignment _assignment;
+    FielderAttributes _attributes;
+
+    /// <summary>조율자가 내려준 현재 수비 지시.</summary>
+    public FieldAssignment Assignment => _assignment;
+
+    /// <summary>포지션별 수비 능력치.</summary>
+    public FielderAttributes Attributes
+    {
+        get
+        {
+            if (_attributes == null || _attributes.Position != _type)
+                _attributes = FielderAttributes.For(_type);
+            return _attributes;
+        }
+    }
+
+    /// <summary>수비 시작 위치(시프트/뎁스가 적용된 값).</summary>
+    public Vector3 HomePosition { get; private set; }
+
+    /// <summary>기본(시프트 적용 전) 수비 위치.</summary>
+    public Vector3 DefaultPosition { get; private set; }
+
+    /// <summary>지금 달리고 있는가(인터셉트 계산에서 반응 시간 생략 여부).</summary>
+    public bool IsRunningNow
+    {
+        get
+        {
+            Defencer d = _role as Defencer;
+            return d != null && d.IsRunning;
+        }
+    }
 
     public Team MyTeam { get; private set; }
     public Rigidbody Rig { get; private set; }
 
-    // 포지션별 고유 특수 역할(베이스 커버 등)을 스스로 결정하기 위한 가상 메서드
-    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos)
+    public void SetAssignment(FieldAssignment a)
     {
-        return false;
+        _assignment = a;
+        // 하위 호환 필드도 함께 갱신
+        DefRole = a.Role;
+        RoleTargetPosition = a.Target;
     }
 
-    /// <summary>
-    /// 타구 유형을 고려한 역할 분배 (기본 구현은 기존 메서드 위임)
-    /// </summary>
-    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos, BATTED_BALL_TYPE ballType)
+    /// <summary>수비 시프트/뎁스 적용. offset 은 필드 기준 월드 오프셋.</summary>
+    public void SetFieldingPosition(Vector3 worldPos)
     {
-        return AssignSpecialRole(chaser, landPos);
+        HomePosition = worldPos;
     }
 
-    /// <summary>
-    /// 이 포지션의 수비 존을 반환. 서브클래스에서 오버라이드하여 커스텀 존 사용 가능.
-    /// </summary>
+    public void ResetFieldingPosition()
+    {
+        HomePosition = DefaultPosition;
+    }
+
+    /// <summary>이 포지션의 수비 존. 서브클래스에서 오버라이드 가능.</summary>
     public virtual DefenseZone GetDefenseZone()
     {
         return DefenseZone.CreateForPosition(_type);
     }
 
+    // 포지션별 특수 역할은 FieldingCoordinator 로 이관되었다.
+    // 커스텀이 필요하면 여기를 오버라이드해서 조율자 결과를 덮어쓸 수 있다.
+    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos) { return false; }
+    public virtual bool AssignSpecialRole(BaseballPlayer chaser, Vector3 landPos, BATTED_BALL_TYPE ballType)
+    {
+        return AssignSpecialRole(chaser, landPos);
+    }
+
     public void SetPlayerType(PLAYER_TYPE type)
     {
         _type = type;
+        _attributes = FielderAttributes.For(type);
     }
 
     protected Ball _ball;
@@ -78,21 +128,16 @@ public class BaseballPlayer : MonoBehaviour
 
     protected Vector3 _initPos;
 
-    /// <summary>
-    /// Defencer class | Attacker class
-    /// </summary>
+    /// <summary>Defencer class | Attacker class</summary>
     protected PlayerRole _role;
     protected Animator _ani;
 
     Transform _ballPool;
 
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
-
     }
 
-    // Update is called once per frame
     void Update()
     {
         update();
@@ -103,40 +148,56 @@ public class BaseballPlayer : MonoBehaviour
         fixedUpdate();
     }
 
-    protected virtual void init(BASE_TYPE bT=BASE_TYPE.E_SELF)
+    void LateUpdate()
+    {
+        // 절차적 모션은 Animator 가 본을 쓴 뒤에 적용해야 덮어써지지 않는다.
+        if (_role != null) _role.lateUpdate();
+    }
+
+    protected virtual void init(BASE_TYPE bT = BASE_TYPE.E_SELF)
     {
         _initPos = transform.position;
+        DefaultPosition = _initPos;
+        HomePosition = _initPos;
         _moveSpeed = 4f;
         _ball = _ball != null ? _ball : null;
-        
-        // 최적화를 위한 컴포넌트 캐싱
+
         if (transform.parent != null)
         {
             MyTeam = transform.parent.GetComponent<Team>();
         }
         Rig = GetComponent<Rigidbody>();
 
+        _assignment = FieldAssignment.Idle(_initPos);
+
         _role.init(_height, transform.GetChild(0).GetChild(1).GetChild(0), _type, _ball, transform, bT);
         setRoleController();
     }
 
-    protected virtual void setRoleController(Transform trans=null)
+    protected virtual void setRoleController(Transform trans = null)
     {
         _role.SetController(_ballPool, trans == null ? _role.GetItemTransform() : trans, _ball.transform);
     }
-    
+
     public bool IsActiveRunner => _role is Attacker att && att.IsOnBaseOrRunning;
 
-    protected virtual void update() { 
-        if(Input.GetKeyDown(KeyCode.A))
+    public virtual void TriggerAReset()
+    {
+        if (!IsActiveRunner)
         {
-            // 공격팀 출루 주자는 A키 리셋 시 위치가 초기화되지 않음
-            if (!IsActiveRunner)
-            {
-                transform.position = _initPos;
-                _role.movementInit();
-            }
+            transform.position = HomePosition;
+            _role.movementInit();
+            _role.ResetRole();
         }
+
+        if (_role is Attacker att)
+        {
+            att.TriggerAReset();
+        }
+    }
+
+    protected virtual void update()
+    {
         _role.update(_moveSpeed);
     }
 
@@ -159,10 +220,10 @@ public class BaseballPlayer : MonoBehaviour
     {
         _ani = GetComponent<Animator>();
         _ballPool = pool;
-        focusBall(ball, isAttacker ? new Attacker() : new Defencer());
+        focusBall(ball, isAttacker ? (PlayerRole)new Attacker() : (PlayerRole)new Defencer());
         setSide(isAttacker);
 
-        init(); 
+        init();
     }
 
     public void JoinGame()
@@ -183,8 +244,9 @@ public class BaseballPlayer : MonoBehaviour
     {
         DefRole = DEFENSIVE_ROLE.IDLE;
         RoleTargetPosition = Vector3.zero;
-        transform.position = _initPos;
-        
+        _assignment = FieldAssignment.Idle(HomePosition);
+        transform.position = HomePosition;
+
         if (Rig != null)
         {
             Rig.linearVelocity = Vector3.zero;
@@ -208,7 +270,7 @@ public class BaseballPlayer : MonoBehaviour
 
     void setSide(bool isAttackSide)
     {
-        _ani.SetBool("isAttacker", isAttackSide);
+        if (_ani != null) _ani.SetBool("isAttacker", isAttackSide);
     }
 
     public void Increase(int i)
@@ -218,11 +280,10 @@ public class BaseballPlayer : MonoBehaviour
 
     private void OnCollisionEnter(Collision collision)
     {
-        Debug.Log(transform.name + "      " + collision.transform.name);
     }
 
     private void OnTriggerEnter(Collider other)
     {
-        _role.OnTriggerEnter(other);
+        if (_role != null) _role.OnTriggerEnter(other);
     }
 }

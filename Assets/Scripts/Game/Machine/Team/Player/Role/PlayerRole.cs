@@ -6,7 +6,7 @@ public class PlayerRole
     protected BASE_TYPE _base;
     protected Animator _ani;
     protected PLAYER_TYPE _type;
-    
+
     /// <summary>
     /// 움직임 없이 잡을 수 있는 범위
     /// x - 좌우
@@ -30,12 +30,13 @@ public class PlayerRole
 
     protected RoleController _controller;
 
-    public virtual void init(float h, Transform tool, PLAYER_TYPE t, Ball ball, Transform player, BASE_TYPE bT=BASE_TYPE.E_SELF) {
+    public virtual void init(float h, Transform tool, PLAYER_TYPE t, Ball ball, Transform player, BASE_TYPE bT = BASE_TYPE.E_SELF)
+    {
         _range = new Vector3(h, 4f, h);
         _base = bT;
         _type = t;
         _my = player;
-        
+
         if (_my != null)
         {
             _ani = _my.GetComponent<Animator>();
@@ -45,19 +46,26 @@ public class PlayerRole
 
         _item = tool;
         _ball = ball;
-        
+
         _item.GetChild(0).gameObject.SetActive(false);
-        if(_item.childCount > 1) _item.GetChild(1).gameObject.SetActive(false);
+        if (_item.childCount > 1) _item.GetChild(1).gameObject.SetActive(false);
     }
-    
+
     public virtual void update(float speed)
     {
         Move(speed);
     }
+
     public virtual void fixedUpdate()
     {
         PhysicsMoves();
     }
+
+    /// <summary>
+    /// Animator 가 본을 쓰고 난 뒤(=LateUpdate)에 절차적 모션을 덮어쓰기 위한 훅.
+    /// Update 에서 자세를 쓰면 Animator 에 지워질 수 있으므로 여기서 적용한다.
+    /// </summary>
+    public virtual void lateUpdate() { }
 
     protected virtual void Move(float speed) { }
 
@@ -65,7 +73,7 @@ public class PlayerRole
 
     public virtual void movementInit()
     {
-        _movement.init();
+        if (_movement != null) _movement.init();
     }
 
     protected virtual bool setMovementTarget(Vector3 pos, Vector3 playerPos, float range, MOVEMENT_TYPE mt, float delay = -1f)
@@ -97,7 +105,7 @@ public class PlayerRole
 
     public virtual void Increase(int i) { }
 
-    public virtual void SetController(Transform pool, Transform point, Transform target, float speed=0f) { }
+    public virtual void SetController(Transform pool, Transform point, Transform target, float speed = 0f) { }
 
     public virtual void ResetRole()
     {
@@ -117,7 +125,8 @@ public class PlayerRole
 
     protected Movement getMovement() { return _movement; }
 
-    public void SetRange(float z) {
+    public void SetRange(float z)
+    {
         _range.z = z;
     }
 

@@ -1,4 +1,3 @@
-using TMPro;
 using UnityEngine;
 
 public class GamePlayerProvider : MonoBehaviour
@@ -8,10 +7,14 @@ public class GamePlayerProvider : MonoBehaviour
 
     public Ball _ball;
     public Transform BallPool;
-    
+
+    /// <summary>현재 경기 공. 수비 조율자가 궤적을 읽기 위해 사용.</summary>
+    public Ball GameBall => _ball;
+
     bool _leftSideIsAttacker;
     public bool LeftSideIsAttacker => _leftSideIsAttacker;
     public Team AttackTeam => _leftSideIsAttacker ? TeamA : TeamB;
+    public Team DefenseTeam => _leftSideIsAttacker ? TeamB : TeamA;
 
     private static GamePlayerProvider _provider;
 
@@ -32,6 +35,7 @@ public class GamePlayerProvider : MonoBehaviour
     void Start()
     {
         _leftSideIsAttacker = false;
+        FieldMetrics.Refresh(true);
         teamInit();
     }
 
@@ -41,74 +45,69 @@ public class GamePlayerProvider : MonoBehaviour
         TeamB.init(BallPool, _ball, !_leftSideIsAttacker);
     }
 
+    public void TriggerAReset()
+    {
+        if (TeamA != null) TeamA.TriggerAReset();
+        if (TeamB != null) TeamB.TriggerAReset();
+    }
+
     public void NotifyBatterHit()
     {
-        Team attackTeam = _leftSideIsAttacker ? TeamA : TeamB;
+        Team attackTeam = AttackTeam;
         if (attackTeam != null)
         {
             BaseballPlayer batter = attackTeam.GetCurrentBatter();
             if (batter != null && batter.GetRole() is Attacker attacker)
             {
+                // OnHitBall 내부에서 기존 주자들에게 진루 명령을 전파하므로
+                // 여기서 NotifyRunnersToAdvance 를 다시 부르면 이중 진루가 발생한다.
                 attacker.OnHitBall();
-                attackTeam.NotifyRunnersToAdvance(_ball != null ? _ball.GetLandPosition() : Vector3.zero, batter);
             }
         }
     }
 
     public void PlayerOut(PLAYER_TYPE t)
     {
-        if (!_leftSideIsAttacker) TeamB.PlayerOut(t);
-        else TeamA.PlayerOut(t);
+        Team attackTeam = AttackTeam;
+        if (attackTeam != null) attackTeam.PlayerOut(t);
     }
 
     public void Walk()
     {
-        // 볼넷 처리: 주자 1베이스 진루 후 다음 타자
         BasePositionProvider.provider.AdvanceRunnersForWalk();
-        
-        Team attackTeam = _leftSideIsAttacker ? TeamA : TeamB;
-        attackTeam.ChangeAttacker();
+
+        Team attackTeam = AttackTeam;
+        if (attackTeam != null) attackTeam.ChangeAttacker();
     }
 
     public void Strikeout()
     {
-        // 삼진 처리: 다음 타자
-        Team attackTeam = _leftSideIsAttacker ? TeamA : TeamB;
-        attackTeam.ChangeAttacker();
+        Team attackTeam = AttackTeam;
+        if (attackTeam != null) attackTeam.ChangeAttacker();
     }
 
     /// <summary>
-    /// 공수전환 대기 없이 다음 이닝으로 즉시 전환 (Fast-forward Inning Simulation)
-    /// 플레이어가 지루하게 대기하지 않도록 반대편 하프 이닝을 시뮬레이션하고 즉시 다음 이닝 시작
+    /// 공수전환 대기 없이 다음 이닝으로 즉시 전환.
     /// </summary>
     public void ChangeInning()
     {
-        // 1. 비플레이어 하프 이닝 즉시 시뮬레이션
         SimulateOffInning();
 
-        // 2. 이닝 증가 및 카운트(Out, Strike, Ball) 0으로 초기화
         if (CountsProvider.provider != null)
         {
             CountsProvider.provider.NextInning();
         }
 
-        // 3. 베이스의 모든 주자 초기화 (주자 리셋)
         BasePositionProvider.provider.ClearBases();
 
-        // 4. 다음 이닝 첫 타자 준비 (타순 순환)
-        Team attackTeam = _leftSideIsAttacker ? TeamA : TeamB;
-        attackTeam.ChangeAttacker();
+        Team attackTeam = AttackTeam;
+        if (attackTeam != null) attackTeam.ChangeAttacker();
 
-        // 5. 플레이 리셋 (수비진 원위치 복귀 + 투수에게 새 공 전달)
         ResetPlay();
     }
 
-    /// <summary>
-    /// 플레이어가 관여하지 않는 하프 이닝을 빠르게 시뮬레이션
-    /// </summary>
     void SimulateOffInning()
     {
-        // 간단한 야구 확률 시뮬레이션 (0점: 65%, 1점: 25%, 2점: 8%, 3점: 2%)
         int simulatedTeamRuns = 0;
         int simulatedOpponentRuns = 0;
 
@@ -130,17 +129,17 @@ public class GamePlayerProvider : MonoBehaviour
 
     public void ResetPlay()
     {
-        // 수비진을 제자리로 돌려보내고 투수에게 공을 지급하는 리셋
-        TeamA.ResetDefense();
-        TeamB.ResetDefense();
-        
+        FieldMetrics.Refresh(true);
+
+        // 수비 조율자 종료 + 상황별 수비 포메이션(뎁스/시프트) 재계산 후 원위치
+        if (TeamA != null) TeamA.ResetDefense();
+        if (TeamB != null) TeamB.ResetDefense();
+
         if (_ball != null)
         {
             _ball.gameObject.SetActive(true);
-            Transform pitcherItem = null;
-            if (!_leftSideIsAttacker) pitcherItem = TeamA.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
-            else pitcherItem = TeamB.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
-            
+            Transform pitcherItem = DefenseTeam != null ? DefenseTeam.GetPlayerItem(PLAYER_TYPE.E_PITCHER) : null;
+
             if (pitcherItem != null)
             {
                 _ball.transform.position = pitcherItem.position;

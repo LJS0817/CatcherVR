@@ -244,8 +244,8 @@ public class BasePositionProvider : MonoBehaviour
             BASE_TYPE baseType = (BASE_TYPE)(i + 2); // E_FIRST_BASE = 2
             char state = getBaseState(baseType)[1];
             
-            // 주자가 해당 베이스로 향하고 있거나(> '9') 도착해있음
-            if (state > '9' && state != DEFAULT_CHAR)
+            // 주자가 향하고 있거나 도착해있음
+            if (state != DEFAULT_CHAR)
             {
                 Transform targetBase = Bases[i];
                 
@@ -254,6 +254,21 @@ public class BasePositionProvider : MonoBehaviour
                 {
                     continue; 
                 }
+
+                Team attackTeam = GamePlayerProvider.provider != null ? GamePlayerProvider.provider.AttackTeam : null;
+                bool isSafe = false;
+                if (attackTeam != null)
+                {
+                    PLAYER_TYPE runnerType = GetAttackerPlayerType(state);
+                    BaseballPlayer runner = attackTeam.GetPlayer(runnerType);
+                    if (runner != null && runner.GetRole() is Attacker runnerAtt)
+                    {
+                        if (runnerAtt.IsSafeOnBase()) isSafe = true;
+                    }
+                }
+
+                // 베이스에 세이프한 상태라면 해당 베이스로 던지지 않음
+                if (isSafe) continue;
 
                 float throwDist = Vector3.Distance(throwerTransform.position, targetBase.position);
                 
@@ -310,9 +325,7 @@ public class BasePositionProvider : MonoBehaviour
             }
             return throwerTransform; // 정말 아무도 없으면 자기 자신(=플레이 종료 트리거)
         }
-        else
-        {
-            // 수비수가 공을 들고 있을 때: 투수에게 공 반환
+            // 수비수가 공을 들고 있을 때 기본 송구 타겟
             if (_provider != null)
             {
                 Team team = null;
@@ -326,10 +339,20 @@ public class BasePositionProvider : MonoBehaviour
                 }
                 if (team != null)
                 {
-                    return team.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
+                    bool isOutfielder = (throwerType == PLAYER_TYPE.E_LEFT_FILED || throwerType == PLAYER_TYPE.E_CENTER_FIELD || throwerType == PLAYER_TYPE.E_RIGHT_FILED);
+                    if (isOutfielder)
+                    {
+                        // 외야는 중계 선수한테 던지고
+                        PLAYER_TYPE cutoffType = (throwerType == PLAYER_TYPE.E_RIGHT_FILED) ? PLAYER_TYPE.E_SECOND_BASE : PLAYER_TYPE.E_SHORT_STOP;
+                        return team.GetPlayerItem(cutoffType);
+                    }
+                    else
+                    {
+                        // 내야수는 투수한테 던져야지
+                        return team.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
+                    }
                 }
             }
-            return Bases[getIndex(BASE_TYPE.E_SECOND_BASE)]; 
-        }
+            return throwerTransform; // fallback
     }
 }

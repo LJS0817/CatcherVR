@@ -126,7 +126,7 @@ public class Bat : MonoBehaviour
         ball.IsFoul = isFoul;
         ball.LostBall();
 
-        if (GamePlayerProvider.provider != null)
+        if (GamePlayerProvider.provider != null && !isFoul)
         {
             GamePlayerProvider.provider.NotifyBatterHit();
         }

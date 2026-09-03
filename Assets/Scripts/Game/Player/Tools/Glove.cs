@@ -64,9 +64,10 @@ public class Glove : MonoBehaviour
     {
         bool grab = !isGrab();
         if (_ball != null && !grab) { 
-            _ball.LostBall();
-            _ball.ResetVelocity();  
-            _ball = null;
+            // 글러브에서 바로 공을 떨어뜨려 던지는 것을 방지 (다른 손으로 빼서 던지도록 강제)
+            // _ball.LostBall();
+            // _ball.ResetVelocity();  
+            // _ball = null;
         }
         InsideGloveCollider.SetActive(grab);
         _ani.SetBool("Grab", grab);

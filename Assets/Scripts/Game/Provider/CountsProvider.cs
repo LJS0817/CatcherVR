@@ -45,7 +45,7 @@ public class CountsProvider : MonoBehaviour
     {
         if (CountsUI != null)
         {
-            CountsUI.SetText($"<b>{CurrentInning}회초</b>   <b>{GetCount(COUNT_TYPE.E_OUT)}</b><size=80%>Out</size>   <b>{GetCount(COUNT_TYPE.E_STRIKE)}-{GetCount(COUNT_TYPE.E_BALL)}</b>");
+            CountsUI.SetText($"<b>{CurrentInning} ▲</b>   <b>{GetCount(COUNT_TYPE.E_OUT)}</b><size=80%>Out</size>   <b>{GetCount(COUNT_TYPE.E_STRIKE)}-{GetCount(COUNT_TYPE.E_BALL)}</b>");
         }
     }
 

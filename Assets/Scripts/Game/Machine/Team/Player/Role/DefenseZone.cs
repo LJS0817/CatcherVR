@@ -119,15 +119,15 @@ public class DefenseZone
     /// <summary>2루수 수비 존: 1·2루 사이 및 우중간 얕은 외야</summary>
     public static DefenseZone CreateSecondBase()
     {
-        // 2루수: -40° ~ +10°, 거리 8~32m
-        return new DefenseZone(-40f, 10f, 8f, 32f);
+        // 2루수: -50° ~ +15°, 거리 5~35m (기존보다 범위 확장)
+        return new DefenseZone(-50f, 15f, 5f, 35f);
     }
 
     /// <summary>유격수 수비 존: 2·3루 사이 및 좌중간 얕은 외야</summary>
     public static DefenseZone CreateShortStop()
     {
-        // 유격수: -10° ~ +40°, 거리 8~32m
-        return new DefenseZone(-10f, 40f, 8f, 32f);
+        // 유격수: -15° ~ +50°, 거리 5~35m (기존보다 범위 확장)
+        return new DefenseZone(-15f, 50f, 5f, 35f);
     }
 
     /// <summary>3루수 수비 존: 중앙쪽(-5°) ~ 좌측 파울 깊숙한 곳(+135°)</summary>
@@ -161,8 +161,8 @@ public class DefenseZone
     /// <summary>투수 수비 존 (마운드 주변 범위)</summary>
     public static DefenseZone CreatePitcher()
     {
-        // 투수: -45° ~ +45°, 거리 0~12m
-        return new DefenseZone(-45f, 45f, 0f, 12f);
+        // 투수: -30° ~ +30°, 거리 0~8m (기존보다 수비 범위 대폭 축소)
+        return new DefenseZone(-30f, 30f, 0f, 8f);
     }
 
     /// <summary>PLAYER_TYPE에 따라 적절한 수비 존을 반환</summary>
