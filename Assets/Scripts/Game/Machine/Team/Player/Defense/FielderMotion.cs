@@ -12,7 +12,9 @@ public enum FIELDER_ACTION
     CROW_HOP,       // 외야 크로우 홉
     THROW,          // 송구 동작
     STRETCH,        // 1루수 스트레치
-    SWEEP_TAG       // 스윕 태그
+    SWEEP_TAG,      // 스윕 태그
+    PIVOT,          // 2루 병살 피벗 (베이스를 스치며 슬라이딩 주자를 피해 점프/스텝스루)
+    PUMP_FAKE       // 런다운 펌프 페이크 (주자 감속 유도)
 }
 
 /// <summary>
@@ -93,6 +95,7 @@ public class FielderMotion
                    _action == FIELDER_ACTION.JUMP ||
                    _action == FIELDER_ACTION.SLIDE ||
                    _action == FIELDER_ACTION.CROW_HOP ||
+                   _action == FIELDER_ACTION.PIVOT ||
                    _action == FIELDER_ACTION.THROW;
         }
     }
@@ -262,6 +265,38 @@ public class FielderMotion
         d.y = 0f;
         _actionDir = d.sqrMagnitude > 0.0001f ? d.normalized : _root.forward;
         Begin(FIELDER_ACTION.SWEEP_TAG, 0.45f);
+    }
+
+    /// <summary>
+    /// 2루 병살 피벗 (설계도 10.1-4).
+    /// 베이스 위에 머물지 않고 발끝으로 스치듯 찍은 뒤,
+    /// 슬라이딩해 들어오는 주자를 피해 베이스 바깥으로 점프/스텝스루하며 송구 자세를 잡는다.
+    /// </summary>
+    /// <param name="escapeDir">주자를 피해 빠져나갈 방향(보통 송구 방향의 옆)</param>
+    public void PlayPivot(Vector3 escapeDir)
+    {
+        if (_action == FIELDER_ACTION.THROW) return;
+        escapeDir.y = 0f;
+        _actionDir = escapeDir.sqrMagnitude > 0.0001f ? escapeDir.normalized : _root.forward;
+        _actionDistance = FieldMetrics.M(0.9f);
+        _actionHeight = FieldMetrics.M(0.22f);
+        _actionStartPos = _root.position;
+        _actionStartRot = _root.rotation;
+        Begin(FIELDER_ACTION.PIVOT, DefenseTuning.PIVOT_STEP_DURATION);
+    }
+
+    /// <summary>
+    /// 런다운 펌프 페이크 (설계도 9장 원칙 ③).
+    /// 던지는 시늉으로 주자의 감속·방향 전환을 유도한다. 루트 이동은 막지 않는다.
+    /// </summary>
+    public void PlayPumpFake(Vector3 towardPoint)
+    {
+        if (IsLocked) return;
+        if (_action == FIELDER_ACTION.PUMP_FAKE) return;
+        Vector3 d = towardPoint - _root.position;
+        d.y = 0f;
+        _actionDir = d.sqrMagnitude > 0.0001f ? d.normalized : _root.forward;
+        Begin(FIELDER_ACTION.PUMP_FAKE, DefenseTuning.PUMP_FAKE_DURATION);
     }
 
     public void StopAction()
@@ -434,6 +469,16 @@ public class FielderMotion
 
                 case FIELDER_ACTION.SWEEP_TAG:
                     ApplySweepTag(p, ref bodyPos, ref bodyRot, ref glovePos, ref gloveRot);
+                    if (p >= 1f) _action = FIELDER_ACTION.NONE;
+                    break;
+
+                case FIELDER_ACTION.PIVOT:
+                    ApplyPivot(p, ref bodyPos, ref bodyRot, ref glovePos, ref throwPos, ref throwRot);
+                    if (p >= 1f) _action = FIELDER_ACTION.NONE;
+                    break;
+
+                case FIELDER_ACTION.PUMP_FAKE:
+                    ApplyPumpFake(p, ref bodyPos, ref bodyRot, ref shoulderRot, ref throwPos, ref throwRot);
                     if (p >= 1f) _action = FIELDER_ACTION.NONE;
                     break;
             }
@@ -675,6 +720,50 @@ public class FielderMotion
         float sweep = Mathf.Lerp(-0.6f, 0.9f, p);
         glovePos = Vector3.Lerp(glovePos, new Vector3(sweep, -1.15f, 1.15f), k);
         gloveRot = Quaternion.Slerp(gloveRot, _gloveRestRot * Quaternion.Euler(-70f, 0f, 0f), k);
+    }
+
+    /// <summary>
+    /// 2루 병살 피벗 (설계도 10.1-4).
+    /// 베이스를 발끝으로 찍는 순간(전반부) → 슬라이딩 주자를 피해 베이스 바깥으로
+    /// 점프/스텝스루하며 착지(후반부). 착지와 동시에 송구 팔이 뒤로 젖혀진다.
+    /// </summary>
+    void ApplyPivot(float p, ref Vector3 bodyPos, ref Quaternion bodyRot,
+                    ref Vector3 glovePos, ref Vector3 throwPos, ref Quaternion throwRot)
+    {
+        // 루트 : 베이스를 스치고 바깥쪽으로 빠진다
+        Vector3 offset = _actionDir * (_actionDistance * EaseOut(p));
+        offset.y = Arc(p) * _actionHeight;
+        _root.position = _actionStartPos + offset;
+
+        // 몸통 : 살짝 웅크렸다가 펴면서 송구 방향으로 비튼다
+        float crouch = Arc(p);
+        bodyPos += new Vector3(0f, -0.10f * crouch, 0f);
+        bodyRot = bodyRot * Quaternion.Euler(14f * crouch, 0f, -18f * crouch);
+
+        // 글러브는 가슴 앞으로 모으고(볼 빼기), 송구 손은 뒤로 젖힌다
+        glovePos = Vector3.Lerp(glovePos, new Vector3(0.12f, -0.35f, 0.42f), crouch);
+        float cock = EaseIn(p);
+        throwPos = Vector3.Lerp(throwPos, new Vector3(-0.45f, 0.30f, -0.45f), cock);
+        throwRot = Quaternion.Slerp(throwRot, _throwRestRot * Quaternion.Euler(-95f, 0f, 0f), cock);
+    }
+
+    /// <summary>
+    /// 런다운 펌프 페이크 (설계도 9장 원칙 ③).
+    /// 던지는 시늉만 하고 공은 놓지 않는다 — 주자의 감속·역방향 전환을 유도한다.
+    /// </summary>
+    void ApplyPumpFake(float p, ref Vector3 bodyPos, ref Quaternion bodyRot, ref Vector3 shoulderRot,
+                       ref Vector3 throwPos, ref Quaternion throwRot)
+    {
+        // 팔을 뒤로 젖혔다가(전반) 앞으로 내미는 척하고 멈춘다(후반)
+        float k = Arc(p);
+        float cock = Mathf.Sin(Mathf.Clamp01(p) * Mathf.PI * 0.85f);
+
+        bodyPos += new Vector3(0f, -0.04f * k, 0f);
+        bodyRot = bodyRot * Quaternion.Euler(8f * k, 0f, 0f);
+        shoulderRot.y += -26f * cock;
+
+        throwPos = Vector3.Lerp(throwPos, new Vector3(-0.40f, 0.34f, -0.38f), cock);
+        throwRot = Quaternion.Slerp(throwRot, _throwRestRot * Quaternion.Euler(-105f * cock, 0f, 0f), cock);
     }
 
     /// <summary>글러브가 공에 정확히 닿도록 팔 위치를 월드 공간에서 보정한다.</summary>

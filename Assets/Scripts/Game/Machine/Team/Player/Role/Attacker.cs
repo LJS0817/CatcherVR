@@ -28,6 +28,19 @@ public class Attacker : PlayerRole
     /// <summary>최종 목표 베이스(장타 시 2·3루까지).</summary>
     public BASE_TYPE FinalTargetBase => _finalTargetBase;
 
+    /// <summary>
+    /// 이 주자가 마지막으로 베이스에 발이 닿은 시각(Time.time). 아직 닿지 않았으면 0.
+    /// 설계도 10.4 의 <c>runner.BaseTouchTimestamp</c> — 포스 아웃 정밀 판정의 입력이다.
+    /// </summary>
+    public float BaseTouchTimestamp { get; private set; }
+
+    /// <summary>베이스 접촉 시각을 기록한다(같은 베이스에 대해 최초 1회).</summary>
+    void StampBaseTouch()
+    {
+        BaseTouchTimestamp = Time.time;
+        Debug.Log($"[BaseTouch] 주자({_type})가 {_base} 베이스를 터치함! (Time: {Time.time:F3})");
+    }
+
     float RunMaxSpeed { get { return FieldMetrics.M(DefenseTuning.RUNNER_TOP_SPEED); } }
     float RunAccel { get { return FieldMetrics.M(DefenseTuning.RUNNER_ACCEL); } }
 
@@ -106,6 +119,7 @@ public class Attacker : PlayerRole
             _isOverrunning = false;
             _isRounding = false;
             _startDelayTimer = 0f;
+            BaseTouchTimestamp = 0f;
             if (_item != null) _item.gameObject.SetActive(true);
             GetController().ResetValue();
         }
@@ -180,10 +194,12 @@ public class Attacker : PlayerRole
                     _my.position = BasePositionProvider.provider.GetBasePosition(BASE_TYPE.E_FIRST_BASE);
                     BasePositionProvider.provider.SetAttackerBaseState(BASE_TYPE.E_FIRST_BASE, (int)_type);
                     IsOnBaseOrRunning = true;
+                    StampBaseTouch();
                 }
                 else
                 {
                     _isOverrunning = true;
+                    StampBaseTouch();       // 1루를 밟고 지나가는 순간이 터치 시점이다
                     Vector3 overrunDir = (_runTarget - _my.position).normalized;
                     if (overrunDir == Vector3.zero) overrunDir = _my.forward;
                     _runTarget = _runTarget + overrunDir * FieldMetrics.M(3.5f);
@@ -198,6 +214,7 @@ public class Attacker : PlayerRole
                 _my.position = _runTarget;
                 BasePositionProvider.provider.SetAttackerBaseState(_base, (int)_type);
                 IsOnBaseOrRunning = true;
+                StampBaseTouch();
             }
         }
         else
@@ -277,6 +294,7 @@ public class Attacker : PlayerRole
         IsOnBaseOrRunning = true;
         _currentSpeed = 0f;
         _isOverrunning = false;
+        BaseTouchTimestamp = 0f;
         _startDelayTimer = UnityEngine.Random.Range(0.15f, 0.25f);
 
         setMovementTarget(_runTarget, _my.position, -1f, MOVEMENT_TYPE.E_RUN, _startDelayTimer);
@@ -363,6 +381,7 @@ public class Attacker : PlayerRole
         if (collider.transform.tag.Equals("Base"))
         {
             BasePositionProvider.provider.SetAttackerBaseState(_base, (int)_type);
+            StampBaseTouch();
         }
     }
 

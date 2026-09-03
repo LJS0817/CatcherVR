@@ -20,6 +20,12 @@ public class FielderAttributes
     public float ArmSpeedRaw = 36f;         // m/s : 송구 초속
     public float MaxThrowRangeRaw = 95f;    // m : 노바운드 송구 한계
 
+    /// <summary>
+    /// 설계도 11.1 「캐치 반경 내 100% 포구 보장」의 반경(m).
+    /// 이 안으로 공이 들어오면 어떤 상태에서든 반드시 잡는다.
+    /// </summary>
+    public float CatchRadiusRaw = DefenseTuning.GUARANTEED_CATCH_RADIUS;
+
     // ── 시간 계열(스케일 무관) ───────────────────────────
     public float TransferTime = 0.36f;      // s : 글러브 → 던지는 손
     public float SetFeetTime = 0.18f;       // s : 발 세팅(외야는 크로우 홉)
@@ -43,6 +49,13 @@ public class FielderAttributes
     public float DiveExtension { get { return FieldMetrics.M(DiveExtensionRaw); } }
     public float ArmSpeed { get { return FieldMetrics.M(ArmSpeedRaw); } }
     public float MaxThrowRange { get { return FieldMetrics.M(MaxThrowRangeRaw); } }
+    public float CatchRadius { get { return FieldMetrics.M(CatchRadiusRaw); } }
+
+    /// <summary>다이빙 · 슬라이딩 · 스트레치 중 일시 확장되는 캐치 반경.</summary>
+    public float ExtendedCatchRadius
+    {
+        get { return FieldMetrics.M(Mathf.Max(CatchRadiusRaw, DefenseTuning.GUARANTEED_CATCH_RADIUS_EXTENDED)); }
+    }
 
     public bool IsOutfielder
     {
@@ -115,6 +128,18 @@ public class FielderAttributes
         return (distance / v) * arcPenalty;
     }
 
+    /// <summary>
+    /// 지정한 구속(실측 m/s)으로 던졌을 때의 비행 시간.
+    /// 투수 반환처럼 일부러 약하게 던지는 송구에 쓴다(설계도 12.2).
+    /// </summary>
+    public float ThrowFlightTimeAt(float distance, float rawSpeed)
+    {
+        if (distance <= 0.1f) return 0.05f;
+        float v = FieldMetrics.M(Mathf.Max(4f, rawSpeed));
+        float arcPenalty = 1f + Mathf.Clamp01(distance / Mathf.Max(1f, MaxThrowRange)) * 0.28f;
+        return (distance / v) * arcPenalty;
+    }
+
     /// <summary>포구부터 릴리스까지 걸리는 시간(글러브 전환 + 발 세팅).</summary>
     public float ReleaseTime { get { return TransferTime + SetFeetTime; } }
 
@@ -149,6 +174,7 @@ public class FielderAttributes
                 a.GloveReachRaw = 1.00f;
                 a.VerticalReachRaw = 2.45f;
                 a.DiveExtensionRaw = 1.20f;
+                a.CatchRadiusRaw = DefenseTuning.GUARANTEED_CATCH_RADIUS_LONG;
                 a.TransferTime = 0.30f;      // 포수는 볼 빼기가 가장 빠름(팝타임)
                 a.SetFeetTime = 0.14f;
                 a.ArmSpeedRaw = 35f;
@@ -162,6 +188,7 @@ public class FielderAttributes
                 a.AccelerationRaw = 5.2f;
                 a.GloveReachRaw = 1.18f;     // 미트가 크고 스트레치 리치가 김
                 a.VerticalReachRaw = 2.70f;
+                a.CatchRadiusRaw = DefenseTuning.GUARANTEED_CATCH_RADIUS_LONG;
                 a.DiveExtensionRaw = 1.60f;
                 a.TransferTime = 0.38f;
                 a.SetFeetTime = 0.18f;
@@ -217,6 +244,7 @@ public class FielderAttributes
                 a.VerticalReachRaw = 2.75f;
                 a.JumpReachRaw = 0.80f;
                 a.DiveExtensionRaw = 1.85f;
+                a.CatchRadiusRaw = 1.35f;
                 a.TransferTime = 0.50f;
                 a.SetFeetTime = 0.40f;       // 크로우 홉
                 a.ArmSpeedRaw = 38f;
@@ -233,6 +261,7 @@ public class FielderAttributes
                 a.VerticalReachRaw = 2.80f;
                 a.JumpReachRaw = 0.85f;
                 a.DiveExtensionRaw = 1.90f;
+                a.CatchRadiusRaw = 1.35f;
                 a.TransferTime = 0.50f;
                 a.SetFeetTime = 0.40f;
                 a.ArmSpeedRaw = 39f;
@@ -249,6 +278,7 @@ public class FielderAttributes
                 a.VerticalReachRaw = 2.75f;
                 a.JumpReachRaw = 0.80f;
                 a.DiveExtensionRaw = 1.85f;
+                a.CatchRadiusRaw = 1.35f;
                 a.TransferTime = 0.50f;
                 a.SetFeetTime = 0.40f;
                 a.ArmSpeedRaw = 41f;         // 우익수는 3루 송구를 위해 어깨가 가장 강함

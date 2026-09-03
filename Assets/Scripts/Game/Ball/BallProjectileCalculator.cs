@@ -79,4 +79,13 @@ public class BallProjectileCalculator : MonoBehaviour
         Transform sprite = HitSprite;
         if (sprite != null) sprite.gameObject.SetActive(false);
     }
+
+    /// <summary>궤적 선과 마커를 즉시 숨긴다(포구 시 등).</summary>
+    public void Clear(LineRenderer line)
+    {
+        _trajectory.Clear();
+        if (line != null) line.positionCount = 0;
+        Transform sprite = HitSprite;
+        if (sprite != null) sprite.gameObject.SetActive(false);
+    }
 }

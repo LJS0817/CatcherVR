@@ -63,6 +63,12 @@ public class BallTrajectory
     /// <summary>초기 속도(m/s).</summary>
     public float LaunchSpeed { get; private set; }
 
+    public void Clear()
+    {
+        _count = 0;
+        Version++;
+    }
+
     public TrajectoryPoint this[int i]
     {
         get { return _points[Mathf.Clamp(i, 0, Mathf.Max(0, _count - 1))]; }

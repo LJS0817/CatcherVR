@@ -72,6 +72,34 @@ public class GamePlayerProvider : MonoBehaviour
         if (attackTeam != null) attackTeam.PlayerOut(t);
     }
 
+    /// <summary>
+    /// 현재 타자를 아웃으로 <b>기록만</b> 한다(타자 교체는 하지 않는다).
+    ///
+    /// 플라이 아웃 경로에서 PlayerOut() 을 쓰면 내부에서 ChangeAttacker() 가 호출되고,
+    /// 플레이 종료 시 한 번 더 호출되어 <b>타순이 한 명씩 건너뛰는</b> 버그가 있었다.
+    /// 타자 교체는 Team.CompletePlay() 한 곳에서만 수행한다.
+    /// </summary>
+    public void RegisterBatterOut()
+    {
+        Team attackTeam = AttackTeam;
+        BaseballPlayer batter = attackTeam != null ? attackTeam.GetCurrentBatter() : null;
+        Attacker att = batter != null ? batter.GetRole() as Attacker : null;
+
+        CountsProvider cp = CountsProvider.provider;
+        if (cp == null)
+        {
+            if (att != null) att.OnOut();
+            else if (batter != null) batter.ExitGame();
+            return;
+        }
+
+        cp.IncreaseCount(COUNT_TYPE.E_OUT, delegate ()
+        {
+            if (att != null) att.OnOut();
+            else if (batter != null) batter.ExitGame();
+        });
+    }
+
     public void Walk()
     {
         BasePositionProvider.provider.AdvanceRunnersForWalk();

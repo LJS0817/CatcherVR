@@ -12,25 +12,20 @@ public enum FIELDER_STATE
     THROW,       // 송구 동작
     COVER,       // 베이스 커버 · 중계 · 백업 위치에서 대기
     RECEIVE,     // 날아오는 송구 수구 (필요 시 스트레치)
-    TAG,         // 태그 시도
+    TAG,         // 태그 시도 / 런다운
     RETURN       // 원위치 복귀
 }
 
 /// <summary>
-/// 수비수 AI — 전면 재작성.
+/// 수비수 AI.
 ///
-/// 예전 구현의 문제
-///   · 1,180줄 한 클래스에 이동 · 포구 · 송구 · 아웃 판정 · 모션이 뒤섞여 있었다.
-///   · 도달 가능성을 세 곳에서 서로 다른 하드코딩 속도로 따로 계산했다.
-///   · 땅볼 궤적은 첫 바운드에서 끊겨서 "공 뒤꽁무니 쫓기"가 발생했다.
-///   · 송구는 주자 도착 시간을 전혀 보지 않고 거리 점수만으로 골랐다.
-///   · 포구 직후 GrabBall 이 _isBattedBall 을 지워버려서 <b>플라이 아웃이 아예 발동하지 않았다.</b>
-///
-/// 새 구조
+/// 구성
 ///   BallTrajectory     : 바운드·구름까지 포함한 궤적 예측 (실제 물리와 동일 공식)
 ///   InterceptSolver    : 반응 · 가속 · 후진 페널티 · 글러브 리치를 반영한 도달 판정
 ///   FieldingCoordinator: 콜오프 우선순위 기반 역할 배정(1차/트레일/중계/커버/백업)
-///   ThrowDecision      : 송구 도착 시간 vs 주자 ETA 비교로 아웃 가능한 최선의 플레이
+///   ThrowDecision      : 사용자 지휘 &gt; 송구 도착 시간 vs 주자 ETA 비교
+///   CatchPostureTable  : 포구 자세별 기상 · 볼 빼기 딜레이(설계도 8장)
+///   RundownPlay        : 런다운 협력 수비(설계도 9장)
 ///   FielderMotion      : 애니메이션 클립 없이 스크립트로 만드는 절차적 몸동작
 ///   이 클래스           : 위를 엮는 상태 기계
 /// </summary>
@@ -64,6 +59,30 @@ public class Defencer : PlayerRole
 
     DefenseZone _defenseZone;
 
+    // ── 포구 자세 / 송구 보정 (설계도 8장) ────────────────
+    CATCH_POSTURE _posture = CATCH_POSTURE.ROUTINE_STANDING;
+    float _throwPowerScale = 1f;
+
+    // ── 자기 송구 재포구 방지 ─────────────────────────────
+    float _selfThrowLockout;
+
+    // ── 투수 반환 / 런다운 ────────────────────────────────
+    int _returnAttempts;
+    int _rundownThrows;
+    float _tagLingerTimer;
+    bool _pumpFaked;
+
+    // ── 정밀 아웃 판정용 타임스탬프 (설계도 10.4) ─────────
+    /// <summary>이 야수가 공을 완전히 확보한 시각(Time.time).</summary>
+    float _ballSecuredTime;
+
+    /// <summary>공을 쥔 채 베이스를 밟기 시작한 시각과 그 베이스.</summary>
+    BASE_TYPE _controlBase = BASE_TYPE.E_SELF;
+    float _baseControlTime;
+
+    /// <summary>직전 송구가 병살의 첫 단계였는가(피벗 스텝 판단용).</summary>
+    bool _turningTwo;
+
     // ── 외부 조회용 ───────────────────────────────────────
     public FIELDER_STATE State { get { return _state; } }
     public bool HasBall { get { return _hasBall; } }
@@ -71,6 +90,11 @@ public class Defencer : PlayerRole
     public FielderAttributes Attributes { get { return _attr; } }
     public bool IsRunning { get { return _velocity.sqrMagnitude > 0.6f; } }
     public DefenseZone Zone { get { return _defenseZone; } }
+    public CATCH_POSTURE LastCatchPosture { get { return _posture; } }
+    /// <summary>공을 확보한 시각. 설계도 10.4 의 <c>BallCatchTimestamp</c>.</summary>
+    public float BallCatchTimestamp { get { return _ballSecuredTime; } }
+    /// <summary>지금 병살 피벗(선행 아웃 → 1루 연결) 중인가.</summary>
+    public bool IsTurningTwo { get { return _turningTwo; } }
     public Vector3 GloveWorldPosition { get { return _motion != null ? _motion.GloveWorldPosition : _my.position; } }
 
     FieldAssignment Assignment
@@ -166,6 +190,17 @@ public class Defencer : PlayerRole
         _plan = ThrowPlan.Hold();
         _ballType = BATTED_BALL_TYPE.GROUND_BALL;
         _lastTrajVersion = -1;
+        _posture = CATCH_POSTURE.ROUTINE_STANDING;
+        _throwPowerScale = 1f;
+        _selfThrowLockout = 0f;
+        _returnAttempts = 0;
+        _rundownThrows = 0;
+        _tagLingerTimer = 0f;
+        _pumpFaked = false;
+        _ballSecuredTime = 0f;
+        _controlBase = BASE_TYPE.E_SELF;
+        _baseControlTime = 0f;
+        _turningTwo = false;
         if (_controller != null && _item != null) _controller.SetItemPoint(_item);
         if (_my != null) _baseY = _my.position.y;
     }
@@ -177,19 +212,26 @@ public class Defencer : PlayerRole
     public override void BallEventListener(Vector3 playerPos, Vector3 startPos, Vector3 endPos, Vector3 inc)
     {
         if (_ball == null) return;
-        if (_ball.DontNeedToMove()) return;          // 투구 · 송구는 타구가 아니다
+
+        // 타구 + 플레이어(포수)의 송구가 수비 반응 대상이다.
+        // 플레이어 송구를 포함시키는 이유 : 설계도 11.3 「송구 미스 시 타격과 동일한
+        // 유동적 수비 전환」을 같은 경로로 처리하기 위해서다.
+        bool batted = _ball._isBattedBall;
+        bool playerThrow = _ball.IsPlayerThrow;
+        if (!batted && !playerThrow) return;
 
         BallTrajectory traj = _ball.Trajectory;
         if (traj == null || !traj.IsValid) return;
         if (traj.Version == _lastTrajVersion) return;
         _lastTrajVersion = traj.Version;
 
-        _ballType = BattedBallClassifier.ClassifyFromTrajectory(traj);
+        _ballType = batted ? BattedBallClassifier.ClassifyFromTrajectory(traj) : BATTED_BALL_TYPE.GROUND_BALL;
 
         // 팀 조율자에게 알림 (팀 쪽에서 Version 으로 중복 호출을 막는다)
         if (_bp != null && _bp.MyTeam != null)
         {
-            _bp.MyTeam.OnBattedBall(traj, _ballType);
+            if (batted) _bp.MyTeam.OnBattedBall(traj, _ballType);
+            else _bp.MyTeam.OnLooseBall(traj);
         }
 
         if (_hasBall) return;
@@ -216,8 +258,14 @@ public class Defencer : PlayerRole
         float dt = Time.deltaTime;
         if (dt <= 0f) return;
         _stateTime += dt;
+        if (_selfThrowLockout > 0f) _selfThrowLockout -= dt;
+        if (_tagLingerTimer > 0f) _tagLingerTimer -= dt;
 
         FieldMetrics.Refresh();
+
+        // ★ 설계도 11.1 : 캐치 반경 안이면 어떤 상태에서든 100% 포구한다.
+        //   베이스 커버 중이든, 백업으로 달리는 중이든, 원위치 복귀 중이든 예외가 없다.
+        if (TryGuaranteedCatch()) return;
 
         switch (_state)
         {
@@ -235,6 +283,10 @@ public class Defencer : PlayerRole
 
         // 공을 쥐고 있는 동안은 항상 아웃 판정을 돌린다
         if (_hasBall) CheckOutsWhileHoldingBall();
+
+#if UNITY_EDITOR
+        DrawDebugTarget();
+#endif
     }
 
     /// <summary>절차적 모션 적용. Animator 뒤에 실행되도록 LateUpdate 에서 호출된다.</summary>
@@ -253,6 +305,115 @@ public class Defencer : PlayerRole
         if (_state == s) return;
         _state = s;
         _stateTime = 0f;
+    }
+
+#if UNITY_EDITOR
+    void DrawDebugTarget()
+    {
+        if (Application.isPlaying && _bp != null)
+        {
+            Vector3 target = Assignment.Target;
+            Color debugColor = Assignment.IsPrimary ? Color.red : Color.green;
+            Debug.DrawLine(_my.position, target, debugColor);
+
+            // 원 그리기
+            int segments = 16;
+            float angle = 0f;
+            float step = 360f / segments;
+            float radius = 0.5f;
+            Vector3 prev = target + new Vector3(Mathf.Sin(0) * radius, 0.1f, Mathf.Cos(0) * radius);
+            for (int i = 1; i <= segments; i++)
+            {
+                angle += step;
+                float rad = angle * Mathf.Deg2Rad;
+                Vector3 next = target + new Vector3(Mathf.Sin(rad) * radius, 0.1f, Mathf.Cos(rad) * radius);
+                Debug.DrawLine(prev, next, debugColor);
+                prev = next;
+            }
+        }
+    }
+#endif
+
+    // ============================================================
+    //  캐치 반경 100% 포구 보장 (설계도 11.1)
+    // ============================================================
+
+    /// <summary>
+    /// 공과의 3D 거리가 캐치 반경 안이면 무조건 포구한다.
+    /// 다이빙 · 슬라이딩 · 스트레치 중에는 몸이 늘어난 만큼 반경이 확장된다.
+    /// </summary>
+    bool TryGuaranteedCatch()
+    {
+        if (_hasBall) return false;
+        if (_ball == null || !_ball.IsLiveForDefense) return false;
+        if (_selfThrowLockout > 0f) return false;          // 내가 방금 던진 공을 다시 잡지 않는다
+        if (_motion != null && _motion.IsThrowing) return false;
+
+        // 중계맨이 "통과(Let it go)" 지시를 받았으면 일부러 잡지 않는다(설계도 5.3)
+        if (ShouldLetBallGo()) return false;
+
+        // AI → AI 송구는 지정된 수구자만 받는다.
+        // (이 가드가 없으면 송구 라인 근처의 엉뚱한 야수가 병살 송구를 가로챈다.)
+        if (!IsDesignatedReceiverOrLoose()) return false;
+
+        float radius = (_motion != null && _motion.IsExtended)
+            ? _attr.ExtendedCatchRadius
+            : _attr.CatchRadius;
+
+        Vector3 ballPos = _ball.GetPosition();
+
+        // 글러브 기준과 몸통(가슴) 기준 중 가까운 쪽을 쓴다.
+        Vector3 chest = new Vector3(_my.position.x,
+                                    FieldMetrics.GroundY + _attr.VerticalReach * 0.45f,
+                                    _my.position.z);
+        float d = Mathf.Min(Vector3.Distance(GloveWorldPosition, ballPos),
+                            Vector3.Distance(chest, ballPos));
+
+        if (d > radius) return false;
+
+        CatchBall();
+        return true;
+    }
+
+    /// <summary>
+    /// 이 공을 내가 잡아도 되는가.
+    ///   · 타구 · 플레이어 송구 · 이미 땅에 닿은(빗나간) 공 → 누구나 처리 가능(루즈볼)
+    ///   · AI 송구  → 지정된 수구자, 또는 「컷」 지시를 받은 중계맨만
+    /// </summary>
+    bool IsDesignatedReceiverOrLoose()
+    {
+        if (!_ball.IsFielderThrow) return true;                 // 타구 · 플레이어 송구 · 루즈볼
+        if (_ball.HasTouchedGround) return true;                // 빗나가 바운드된 송구 = 루즈볼
+
+        Transform target = _ball.ThrowReceiver;
+        if (target == null) return true;                        // 수구자 미지정 송구
+
+        if (target == _my || target.IsChildOf(_my)) return true;
+
+        FieldAssignment a = Assignment;
+
+        // 커버 요원이 도중에 교체되었더라도, 내가 지키는 베이스로 날아온 송구는 받는다.
+        if (a.Role == DEFENSIVE_ROLE.BASE_COVER && a.CoverBase != BASE_TYPE.E_SELF)
+        {
+            Vector3 basePos = FieldMetrics.BasePos(a.CoverBase);
+            if (FieldMetrics.FlatDistance(_ball.GetPosition(), basePos) < FieldMetrics.M(3f)) return true;
+        }
+
+        // 플레이어가 「컷」을 콜했다면 중계맨은 가로챌 권한을 얻는다(설계도 5.3)
+        if (DefenseCommand.CutRequested &&
+            (a.Role == DEFENSIVE_ROLE.CUTOFF || a.Role == DEFENSIVE_ROLE.RELAY)) return true;
+
+        return false;
+    }
+
+    /// <summary>플레이어의 "통과" 콜을 받은 중계맨인가.</summary>
+    bool ShouldLetBallGo()
+    {
+        if (!DefenseCommand.LetGoRequested) return false;
+        DEFENSIVE_ROLE role = Assignment.Role;
+        if (role != DEFENSIVE_ROLE.CUTOFF && role != DEFENSIVE_ROLE.RELAY) return false;
+        // 홈 승부를 위해 흘려보내는 상황에서만 유효하다
+        return true;
     }
 
     // ============================================================
@@ -331,7 +492,18 @@ public class Defencer : PlayerRole
 
         // 공이 사정권에 들어오면 포구 단계로
         float ballDist = FieldMetrics.FlatDistance(_my.position, _ball.GetPosition());
-        if (_ball.isCatchable() && ballDist < FieldMetrics.M(DefenseTuning.FIELD_ACTION_RANGE))
+        float ballHeight = _ball.GetPosition().y - FieldMetrics.GroundY;
+
+        bool readyToField = ballDist < FieldMetrics.M(DefenseTuning.FIELD_ACTION_RANGE);
+        
+        // 플라이볼을 기다리는 중이라면 공이 머리 위 가까이(수직 도달 범위 근처) 내려올 때까지 포구 단계로 넘어가지 않는다.
+        // 미리 넘어갈 경우, 2D 거리는 가깝지만 고도가 높은 공의 '그림자'를 따라 이동하며 낙구 지점을 이탈하는 버그가 발생한다.
+        if (a.Intercept.IsAirCatch && ballHeight > _attr.VerticalReach + _attr.JumpReach + FieldMetrics.M(1.5f))
+        {
+            readyToField = false;
+        }
+
+        if (_ball.isCatchable() && readyToField)
         {
             _actionCommitted = false;
             SetState(FIELDER_STATE.FIELD);
@@ -470,7 +642,8 @@ public class Defencer : PlayerRole
         _secureTimer -= dt;
 
         // 외야수는 송구 전에 크로우 홉으로 도움닫기
-        if (!_crowHopped && _attr.IsOutfielder && _plan.Kind == THROW_KIND.TO_BASE)
+        if (!_crowHopped && _attr.IsOutfielder &&
+            (_plan.Kind == THROW_KIND.TO_BASE || _plan.Kind == THROW_KIND.RELAY))
         {
             _crowHopped = true;
             Vector3 d = _plan.AimPoint - _my.position;
@@ -478,7 +651,8 @@ public class Defencer : PlayerRole
             _motion.PlayCrowHop(d);
         }
 
-        if (_plan.Kind == THROW_KIND.TO_BASE || _plan.Kind == THROW_KIND.RELAY)
+        if (_plan.Kind == THROW_KIND.TO_BASE || _plan.Kind == THROW_KIND.RELAY ||
+            _plan.Kind == THROW_KIND.TO_PITCHER)
         {
             FaceToward(_plan.AimPoint, dt, 16f);
         }
@@ -489,8 +663,14 @@ public class Defencer : PlayerRole
         {
             case THROW_KIND.TO_BASE:
             case THROW_KIND.RELAY:
-            case THROW_KIND.TO_PITCHER:
                 BeginThrow();
+                break;
+
+            case THROW_KIND.TO_PITCHER:
+                // 반환 계획이 이미 세워진 송구면 그대로 던지고,
+                // 아직 계획이 없으면 반환 시퀀스를 구성한다(외야 → 내야 → 투수).
+                if (_plan.IsReturnThrow) BeginThrow();
+                else FinishPlayWithBall();
                 break;
 
             case THROW_KIND.RUN_TO_BASE:
@@ -498,11 +678,12 @@ public class Defencer : PlayerRole
                 break;
 
             case THROW_KIND.TAG_RUNNER:
+                _rundownThrows = 0;
                 SetState(FIELDER_STATE.TAG);
                 break;
 
             default:
-                // 던질 곳이 없음 — 플레이 종료
+                // 던질 곳이 없음 — 플레이 종료 절차
                 FinishPlayWithBall();
                 break;
         }
@@ -518,7 +699,7 @@ public class Defencer : PlayerRole
                 ? _bp.MyTeam.GetPlayerItem(PLAYER_TYPE.E_PITCHER) : null;
             if (pitcherHand == null || _type == PLAYER_TYPE.E_PITCHER)
             {
-                FinishPlayWithBall();
+                HardFinishWithBall();
                 return;
             }
             aim = pitcherHand.position;
@@ -541,9 +722,18 @@ public class Defencer : PlayerRole
         float duration = Mathf.Clamp((_attr.ReleaseTime - crowHop) / 0.70f, 0.30f, 1.0f);
         bool sidearm = _attr.IsInfielder && dist < FieldMetrics.M(24f);
 
-        float flight = _attr.ThrowFlightTime(dist);
-        Vector3 finalAim = aim;
+        // 설계도 8장 : 포구 자세에 따라 송구 파워가 떨어지면 도착도 그만큼 늦어진다.
+        float flight;
+        if (_plan.SpeedOverrideRaw > 0f)
+        {
+            flight = _attr.ThrowFlightTimeAt(dist, _plan.SpeedOverrideRaw);
+        }
+        else
+        {
+            flight = _attr.ThrowFlightTime(dist) / Mathf.Clamp(_throwPowerScale, 0.5f, 1f);
+        }
 
+        Vector3 finalAim = aim;
         _plan.AimPoint = finalAim;
         _plan.FlightTime = flight;
 
@@ -560,9 +750,24 @@ public class Defencer : PlayerRole
     {
         if (!_hasBall || _ball == null) return;
         _hasBall = false;
+        _controlBase = BASE_TYPE.E_SELF;
+        _selfThrowLockout = 0.45f;    // 내가 던진 공을 그 자리에서 다시 잡지 않도록
 
         Transform origin = _throwHand != null ? _throwHand : _item;
         _ball.ThrowByFielder(origin.position, aim, flightTime);
+
+        // 지정 수구자를 명시해 중간 가로채기를 막는다(설계도 11.2 : AI→AI 송구는 무오차).
+        Transform receiverTr = null;
+        if (_plan.Receiver != null) receiverTr = _plan.Receiver.transform;
+        else if (_plan.Kind == THROW_KIND.TO_PITCHER && _bp != null && _bp.MyTeam != null)
+        {
+            BaseballPlayer p = _bp.MyTeam.GetPlayer(PLAYER_TYPE.E_PITCHER);
+            if (p != null) receiverTr = p.transform;
+        }
+        _ball.SetThrowReceiver(receiverTr);
+
+        // 사용자 지정 송구는 한 번 이행하면 소비된다(다음 송구는 다시 AI 판단).
+        if (_plan.IsUserCommanded) DefenseCommand.ConsumeThrowCommand();
 
         if (_bp != null && _bp.MyTeam != null)
         {
@@ -630,6 +835,13 @@ public class Defencer : PlayerRole
         Vector3 target = a.Target;
         target.y = _baseY;
 
+        // 「통과」 지시를 받은 중계맨은 송구 라인에서 한 발 비켜선다(설계도 5.3)
+        if ((a.Role == DEFENSIVE_ROLE.CUTOFF || a.Role == DEFENSIVE_ROLE.RELAY) && DefenseCommand.LetGoRequested)
+        {
+            Vector3 side = Vector3.Cross(Vector3.up, (a.FaceTarget - target).normalized);
+            target += side * FieldMetrics.M(2.0f);
+        }
+
         float d = FieldMetrics.FlatDistance(_my.position, target);
         if (d > FieldMetrics.M(DefenseTuning.ARRIVE_DISTANCE))
         {
@@ -643,7 +855,13 @@ public class Defencer : PlayerRole
 
         // 나에게 오는 송구 / 튀어나온 공에 반응
         // (백업 야수가 수구자의 공을 가로채지 않도록 역할과 거리로 제한한다)
-        bool canReceive = a.Role == DEFENSIVE_ROLE.BASE_COVER || a.Role == DEFENSIVE_ROLE.CUTOFF;
+        bool isRelayRole = a.Role == DEFENSIVE_ROLE.CUTOFF || a.Role == DEFENSIVE_ROLE.RELAY;
+        bool canReceive = a.Role == DEFENSIVE_ROLE.BASE_COVER || isRelayRole;
+
+        // 플레이어가 「컷」을 콜했으면 중계맨은 적극적으로 가로채러 나간다
+        if (isRelayRole && DefenseCommand.CutRequested) canReceive = true;
+        if (isRelayRole && DefenseCommand.LetGoRequested) canReceive = false;
+
         if (!canReceive)
         {
             canReceive = FieldMetrics.FlatDistance(_my.position, _ball.GetPosition()) < FieldMetrics.M(2.5f);
@@ -674,12 +892,13 @@ public class Defencer : PlayerRole
 
         if (onBase)
         {
-            // 베이스에 발을 붙인 채 상체만 뻗는다
-            Vector3 basePos = FieldMetrics.BasePos(a.CoverBase);
-            basePos.y = _baseY;
-            if (FieldMetrics.FlatDistance(_my.position, basePos) > FieldMetrics.M(0.5f))
+            // ── 설계도 10.1 : 베이스 중앙(주자 슬라이딩 주로)을 비우고 안쪽 모서리에 발을 대고
+            //    송구 방향으로 몸을 최대한 뻗는다(Max Stretch). ──
+            Vector3 spot = a.Target;      // 조율자가 계산해 준 모서리/스트래들 위치
+            spot.y = _baseY;
+            if (FieldMetrics.FlatDistance(_my.position, spot) > FieldMetrics.M(0.5f))
             {
-                Steer(basePos, dt, 1f);
+                Steer(spot, dt, 1f);
             }
             else
             {
@@ -712,6 +931,10 @@ public class Defencer : PlayerRole
         if (_stateTime > 3.5f) SetState(FIELDER_STATE.COVER);
     }
 
+    // ============================================================
+    //  태그 / 런다운 (설계도 9장 · 10.2)
+    // ============================================================
+
     void TickTag(float dt)
     {
         RunnerInfo r = _plan.TargetRunner;
@@ -721,18 +944,77 @@ public class Defencer : PlayerRole
             return;
         }
 
-        Vector3 rp = r.Player.transform.position;
-        Steer(rp, dt, 1f);
-        FaceToward(rp, dt, 18f);
-
-        if (FieldMetrics.FlatDistance(_my.position, rp) < FieldMetrics.M(DefenseTuning.TAG_RANGE))
+        // 주자 정보를 매 프레임 갱신(위치/베이스가 바뀌므로)
+        r = RefreshRunner(r);
+        if (!r.IsValid || r.IsSafe)
         {
-            if (_motion.CurrentAction != FIELDER_ACTION.SWEEP_TAG) _motion.PlaySweepTag(rp);
-            CheckTagOut(r.Player);
-            if (_hasBall) ReplanThrow(0.1f);
+            ReplanThrow(0.05f);
+            return;
         }
 
-        if (_stateTime > 2.5f && _hasBall) ReplanThrow(0f);
+        Vector3 rp = r.Player.transform.position;
+        Team myTeam = _bp != null ? _bp.MyTeam : null;
+
+        RundownOrder order = RundownPlay.Solve(_bp, r, myTeam, _rundownThrows);
+
+        if (order.Valid)
+        {
+            // ── 원칙 ③ : 주자가 역방향으로 돌면 즉시 플립 토스 ──
+            if (order.ShouldFlip && order.FlipReceiver != null && _rundownThrows < RundownPlay.MAX_THROWS)
+            {
+                _rundownThrows++;
+                _plan.Kind = THROW_KIND.TO_BASE;
+                _plan.TargetBase = order.FlipBase;
+                _plan.Receiver = order.FlipReceiver;
+                _plan.AimPoint = order.FlipAim;
+                _plan.SpeedOverrideRaw = DefenseTuning.RETURN_GENTLE_SPEED;  // 짧은 플립 토스
+                _secureTimer = 0.08f;
+                _crowHopped = true;                                          // 크로우 홉 생략
+                SetState(FIELDER_STATE.SECURE);
+                return;
+            }
+
+            // ── 원칙 ③ : 거리가 압축되면 펌프 페이크 1회로 주자의 감속을 유도한다 ──
+            if (order.PumpFake && !_pumpFaked)
+            {
+                _pumpFaked = true;
+                _motion.PlayPumpFake(FieldMetrics.BasePos(order.DriveToBase));
+            }
+
+            // ── 원칙 ① ② : 하위 베이스 쪽으로 몰면서 4~5m 까지 압축 ──
+            Steer(order.ChasePoint, dt, 1f);
+            FaceToward(rp, dt, 18f);
+        }
+        else
+        {
+            Steer(rp, dt, 1f);
+            FaceToward(rp, dt, 18f);
+        }
+
+        // ── 설계도 10.2 : 다운 앤 스위프 태그 ──
+        if (FieldMetrics.FlatDistance(_my.position, rp) < FieldMetrics.M(DefenseTuning.TAG_RANGE))
+        {
+            if (_motion.CurrentAction != FIELDER_ACTION.SWEEP_TAG)
+            {
+                _motion.PlaySweepTag(rp);
+                _tagLingerTimer = DefenseTuning.TAG_LINGER_TIME;   // 미트를 붙여두는 링거 태그
+            }
+            CheckTagOut(r.Player);
+            if (_hasBall && _tagLingerTimer <= 0f) ReplanThrow(0.1f);
+        }
+
+        if (_stateTime > 3.0f && _hasBall) ReplanThrow(0f);
+    }
+
+    /// <summary>주자 스냅샷을 최신 상태로 다시 읽는다.</summary>
+    RunnerInfo RefreshRunner(RunnerInfo old)
+    {
+        List<RunnerInfo> list = RunnerTracker.Snapshot(true);
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Player == old.Player) return list[i];
+        }
+        return new RunnerInfo();
     }
 
     void TickReturn(float dt)
@@ -740,15 +1022,18 @@ public class Defencer : PlayerRole
         Vector3 home = _bp != null ? _bp.HomePosition : _my.position;
         home.y = _baseY;
 
-        if (FieldMetrics.FlatDistance(_my.position, home) > FieldMetrics.M(DefenseTuning.ARRIVE_DISTANCE))
+        // 설계도 12.3 : 상황 종료 후에는 전력 질주가 아니라 자연스러운 걸음/조깅으로 복귀한다.
+        float walkScale = Mathf.Clamp01(FieldMetrics.M(DefenseTuning.RESET_WALK_SPEED) / Mathf.Max(0.01f, _attr.TopSpeed));
+
+        if (FieldMetrics.FlatDistance(_my.position, home) > FieldMetrics.M(DefenseTuning.READY_ARRIVE_RADIUS))
         {
-            Steer(home, dt, 0.85f);
+            Steer(home, dt, walkScale);
         }
         else
         {
             Decelerate(dt);
             FaceToward(FieldMetrics.Home, dt);
-            SetState(FIELDER_STATE.PRE_PITCH);
+            SetState(FIELDER_STATE.PRE_PITCH);      // READY
         }
 
         FieldAssignment a = Assignment;
@@ -830,10 +1115,11 @@ public class Defencer : PlayerRole
     bool ShouldReactToLooseBall()
     {
         if (_ball == null || !_ball.isCatchable() || _hasBall) return false;
+        if (_selfThrowLockout > 0f) return false;
 
         // 투구(아직 배트에 맞지 않은 공)나 마운드에 놓인 공에는 반응하지 않는다.
         // 이 가드가 없으면 투수가 대기 중인 공을 집어들어 플레이가 무한히 종료된다.
-        if (!_ball._isBattedBall && !_ball.IsFielderThrow) return false;
+        if (!_ball.IsLiveForDefense) return false;
 
         Vector3 ballPos = _ball.GetPosition();
         Vector3 vel = _ball.GetVelocity();
@@ -861,9 +1147,14 @@ public class Defencer : PlayerRole
         if (_ball == null) return;
 
         // ★ GrabBall 이 플래그를 지우기 전에 먼저 읽어둔다.
-        //    기존 구현은 GrabBall 이후에 검사해서 플라이 아웃이 아예 발동하지 않았다.
         bool wasBattedBall = _ball._isBattedBall;
         bool directOut = _ball.CanBeDirectOut();
+
+        // ── 설계도 8장 : 이번 포구의 자세를 판별한다 ──
+        _posture = ClassifyPosture();
+        CatchPostureSpec spec = CatchPostureTable.For(_posture);
+        _throwPowerScale = spec.PowerScale;
+        float readyTime = CatchPostureTable.ReadyTimeFor(_posture, _attr);
 
         _motion.ClearGloveTarget();
         _motion.StopAction();
@@ -873,7 +1164,13 @@ public class Defencer : PlayerRole
         _item.position = _ball.GetPosition();
         _ball.GrabBall(_item);
         _hasBall = true;
+        _ballSecuredTime = Time.time;      // 설계도 10.4 : 포스 아웃 판정의 기준 시각
+        _controlBase = BASE_TYPE.E_SELF;
         _velocity = Vector3.zero;
+        _returnAttempts = 0;
+        _rundownThrows = 0;
+        _pumpFaked = false;
+        _turningTwo = false;
 
         if (_bp != null && _bp.MyTeam != null) _bp.MyTeam.NotifyBallCaught(_bp);
 
@@ -881,44 +1178,48 @@ public class Defencer : PlayerRole
         if (wasBattedBall && directOut)
         {
             _ball.SetBattedBall(false);
-            HandleFlyOut();
+            HandleFlyOut(readyTime);
             return;
         }
 
         _ball.SetBattedBall(false);
-        ReplanThrow(_attr.TransferTime);
+        ReplanThrow(readyTime);
     }
 
-    void HandleFlyOut()
+    /// <summary>포구 순간의 자세를 판별한다(설계도 8장 표).</summary>
+    CATCH_POSTURE ClassifyPosture()
     {
-        if (CountsProvider.provider == null) return;
+        Vector3 ballPos = _ball.GetPosition();
+        float ballHeight = ballPos.y - FieldMetrics.GroundY;
 
-        CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, delegate ()
-        {
-            PLAYER_TYPE batterType = PLAYER_TYPE.E_PITCHER;
-            GamePlayerProvider gp = GamePlayerProvider.provider;
-            if (gp != null && gp.AttackTeam != null)
-            {
-                BaseballPlayer batter = gp.AttackTeam.GetCurrentBatter();
-                if (batter != null) batterType = batter.Type;
-            }
-            if (gp != null) gp.PlayerOut(batterType);
+        Vector3 dir = ballPos - _my.position;
+        dir.y = 0f;
+        bool backhand = dir.sqrMagnitude > 0.0001f &&
+                        Vector3.Dot(_my.right, dir.normalized) < -0.55f;   // 글러브 반대편
 
-            _hasBall = false;
-            if (_bp != null && _bp.MyTeam != null)
-            {
-                _bp.MyTeam.EndPlay();
-                Transform pitcherHand = _bp.MyTeam.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
-                if (pitcherHand != null && _ball != null) _ball.GrabBall(pitcherHand);
-            }
-            if (gp != null)
-            {
-                if (gp.AttackTeam != null) gp.AttackTeam.ChangeAttacker();
-                gp.TriggerAReset();
-            }
-        });
+        bool nearFence = FieldMetrics.DistFromHome(_my.position) >
+                         FieldMetrics.M(DefenseTuning.OUTFIELD_FENCE_DISTANCE - DefenseTuning.WALL_CONTACT_DISTANCE);
 
-        SetState(FIELDER_STATE.RETURN);
+        bool weakGrounder = _ball.IsRolling &&
+                            _ball.GetVelocity().magnitude < FieldMetrics.M(DefenseTuning.BAREHAND_BALL_SPEED);
+
+        return CatchPostureTable.Classify(_motion.CurrentAction, IsRunning, ballHeight,
+                                          backhand, nearFence, weakGrounder);
+    }
+
+    /// <summary>노바운드 포구 — 타자 아웃 처리 후 정상 반환 시퀀스로 이어진다.</summary>
+    void HandleFlyOut(float readyTime)
+    {
+        // [수정] 예전 구현은 gp.PlayerOut(...) 이 내부에서 타자를 교체하고 그 뒤에 또
+        //        ChangeAttacker() 를 불러 <b>타순이 한 명씩 건너뛰었다.</b>
+        //        여기서는 아웃 기록만 하고, 타자 교체는 Team.CompletePlay() 에서 한 번만 수행한다.
+        GamePlayerProvider gp = GamePlayerProvider.provider;
+        if (gp != null) gp.RegisterBatterOut();
+
+        // 리터치 실패(어필 플레이)나 남은 주자 견제가 가능한지 다시 판단하고,
+        // 잡을 게 없으면 그대로 투수 반환 시퀀스로 넘어간다.
+        RunnerTracker.Snapshot(true);
+        ReplanThrow(readyTime);
     }
 
     /// <summary>후속 플레이를 다시 계산하고 SECURE 상태로 들어간다.</summary>
@@ -934,29 +1235,59 @@ public class Defencer : PlayerRole
         SetState(FIELDER_STATE.SECURE);
     }
 
+    /// <summary>
+    /// 더 이상 아웃을 잡을 수 없다 — 설계도 12.2 의 투수 반환 시퀀스를 시작한다.
+    ///   외야에서 주움 → 가장 가까운 내야수에게 1차 중계(24m/s) → 내야수가 투수에게(16m/s)
+    ///   내야에서 주움 → 투수에게 직접 부드럽게(16m/s)
+    ///   투수 본인    → 마운드에서 공 확보 → 전원 리셋 브로드캐스트
+    /// </summary>
     void FinishPlayWithBall()
+    {
+        Team myTeam = _bp != null ? _bp.MyTeam : null;
+
+        if (_type == PLAYER_TYPE.E_PITCHER)
+        {
+            HardFinishWithBall();
+            return;
+        }
+
+        if (myTeam == null || _returnAttempts >= 2)
+        {
+            HardFinishWithBall();
+            return;
+        }
+
+        ThrowPlan ret = ThrowDecision.BuildReturnToPitcher(_bp, _attr, _motion.GloveWorldPosition, myTeam);
+        if (ret.Kind == THROW_KIND.HOLD)
+        {
+            HardFinishWithBall();
+            return;
+        }
+
+        _returnAttempts++;
+        _plan = ret;
+        _secureTimer = Mathf.Max(DefenseTuning.MIN_SECURE_TIME, 0.18f);
+        _crowHopped = false;
+        SetState(FIELDER_STATE.SECURE);
+    }
+
+    /// <summary>
+    /// 반환 송구를 만들 수 없는 예외 상황(투수 없음 · 반복 실패)에서의 안전한 마감.
+    /// 공을 투수 글러브로 회수하고 플레이를 종료한다.
+    /// </summary>
+    void HardFinishWithBall()
     {
         _hasBall = false;
 
         Team myTeam = _bp != null ? _bp.MyTeam : null;
         if (myTeam != null)
         {
-            myTeam.EndPlay();
             if (_type != PLAYER_TYPE.E_PITCHER)
             {
                 Transform pitcherHand = myTeam.GetPlayerItem(PLAYER_TYPE.E_PITCHER);
                 if (pitcherHand != null && _ball != null) _ball.GrabBall(pitcherHand);
             }
-        }
-
-        GamePlayerProvider gp = GamePlayerProvider.provider;
-        if (gp != null)
-        {
-            if (_type == PLAYER_TYPE.E_PITCHER)
-            {
-                if (gp.AttackTeam != null) gp.AttackTeam.ChangeAttacker();
-                gp.TriggerAReset();
-            }
+            myTeam.OnPitcherSecuredBall();
         }
 
         SetState(FIELDER_STATE.RETURN);
@@ -965,33 +1296,7 @@ public class Defencer : PlayerRole
     BaseballPlayer FindRelayMan(Vector3 aim)
     {
         if (_bp == null || _bp.MyTeam == null) return null;
-
-        Vector3 line = aim - _my.position;
-        line.y = 0f;
-        float total = line.magnitude;
-        if (total < 1f) return null;
-        line /= total;
-
-        BaseballPlayer best = null;
-        float bestScore = float.MaxValue;
-
-        for (int i = 0; i < _bp.MyTeam.PlayerCount; i++)
-        {
-            BaseballPlayer p = _bp.MyTeam.GetPlayerAt(i);
-            if (p == null || p == _bp || !p.gameObject.activeSelf) continue;
-            if (!(p.GetRole() is Defencer)) continue;
-
-            Vector3 rel = p.transform.position - _my.position;
-            rel.y = 0f;
-            float along = Vector3.Dot(rel, line);
-            if (along < total * 0.15f || along > total * 0.85f) continue;
-
-            float off = Vector3.Cross(line, rel).magnitude;
-            float score = off + Mathf.Abs(along - total * 0.45f) * 0.4f;
-            if (score < bestScore) { bestScore = score; best = p; }
-        }
-
-        return best;
+        return _bp.MyTeam.GetRelayFielder(_my.position, aim, _bp);
     }
 
     // ============================================================
@@ -1042,7 +1347,13 @@ public class Defencer : PlayerRole
         return best;
     }
 
-    /// <summary>공을 쥔 채 베이스를 밟았을 때의 포스 아웃 판정.</summary>
+    /// <summary>
+    /// 공을 쥔 채 베이스를 밟았을 때의 포스 아웃 판정.
+    ///
+    /// 설계도 10.3 「포스 상태 해제 → 태그 전환」:
+    /// 후행 주자가 먼저 아웃되어 포스가 풀린 주자는 베이스를 밟는 것만으로는 아웃이 아니다.
+    /// 이 경우 즉시 태그 플레이로 전환한다.
+    /// </summary>
     public void CheckBaseForceOut(BASE_TYPE hitBase)
     {
         if (!_hasBall || hitBase == BASE_TYPE.E_SELF) return;
@@ -1052,12 +1363,32 @@ public class Defencer : PlayerRole
         RunnerInfo runner = RunnerTracker.RunnerHeadingTo(hitBase);
         if (!runner.IsValid) return;
         if (!runner.Role.IsOnBaseOrRunning) return;
-        if (!runner.IsForced) return;
         if (runner.IsSafe) return;
 
-        Vector3 basePos = FieldMetrics.BasePos(hitBase);
-        float runnerDist = FieldMetrics.FlatDistance(runner.Position, basePos);
-        if (runnerDist <= FieldMetrics.M(0.45f)) return;    // 주자가 먼저 도착 — 세이프
+        if (!runner.IsForced)
+        {
+            // ★ 포스가 해제된 주자 — 발로 베이스를 밟아봐야 세이프. 직접 태그해야 한다.
+            _plan.Kind = THROW_KIND.TAG_RUNNER;
+            _plan.TargetRunner = runner;
+            _plan.TargetBase = hitBase;
+            _rundownThrows = 0;
+            SetState(FIELDER_STATE.TAG);
+            return;
+        }
+
+        // 공 + 베이스를 동시에 확보한 시각을 기록한다(설계도 10.4 정밀 판정의 기준 시각).
+        if (_controlBase != hitBase)
+        {
+            _controlBase = hitBase;
+            _baseControlTime = Time.time;
+        }
+        float controlTime = Mathf.Max(_ballSecuredTime, _baseControlTime);
+
+        // ★ 설계도 10.4-B : 콜라이더 교차 + 확보/도달 타임스탬프 비교로 정밀 판정
+        if (!OutJudge.EvaluateForceOut(_bp, controlTime, runner, hitBase)) return;
+
+        Debug.Log($"[ForceOut] 수비수({_type})가 {hitBase} 베이스에서 포스 아웃 성공! (Time: {Time.time:F3}, 수비수 컨트롤: {controlTime:F3}, 주자 터치: {runner.Role.BaseTouchTimestamp:F3})");
+
 
         Attacker att = runner.Role;
         CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, delegate () { att.OnOut(); });
@@ -1065,6 +1396,22 @@ public class Defencer : PlayerRole
 
         // 병살 연계 : 방금 아웃된 주자를 목록에서 지우고 다음 송구를 다시 계산
         RunnerTracker.Snapshot(true);
+
+        // ── 설계도 10.1-4 : 2루 병살 피벗 ──
+        // 베이스 위에 머물지 않고, 슬라이딩해 들어오는 주자를 피해 바깥으로 빠지며 송구한다.
+        _turningTwo = false;
+        if (hitBase != BASE_TYPE.E_FIRST_BASE && RunnerTracker.RunnerHeadingTo(BASE_TYPE.E_FIRST_BASE).IsValid)
+        {
+            _turningTwo = true;
+            Vector3 firstBase = FieldMetrics.BasePos(BASE_TYPE.E_FIRST_BASE);
+            Vector3 toFirst = firstBase - FieldMetrics.BasePos(hitBase);
+            toFirst.y = 0f;
+            // 주자 진행선(하위 베이스 → 이 베이스)의 바깥쪽으로 빠진다
+            Vector3 escape = Vector3.Cross(Vector3.up, toFirst.sqrMagnitude > 0.01f ? toFirst.normalized : FieldMetrics.Forward);
+            if (Vector3.Dot(escape, toFirst) < 0f) escape = -escape;
+            _motion.PlayPivot((escape + toFirst.normalized * 0.6f).normalized);
+        }
+
         ReplanThrow(ThrowDecision.PIVOT_TIME * 0.5f);
     }
 
@@ -1076,7 +1423,17 @@ public class Defencer : PlayerRole
 
         Attacker att = runnerPlayer.GetRole() as Attacker;
         if (att == null) return;
-        if (!att.IsOnBaseOrRunning || att.IsSafeOnBase()) return;
+
+        RunnerInfo target = new RunnerInfo();
+        List<RunnerInfo> list = RunnerTracker.Snapshot(true);
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Player == runnerPlayer) { target = list[i]; break; }
+        }
+        if (!target.IsValid) return;
+
+        // ★ 설계도 10.4-C : 미트 트리거 ↔ 주자 히트박스 오버랩 + 주자의 베이스 미접촉
+        if (!OutJudge.EvaluateTagOut(_hasBall, _motion.GloveWorldPosition, target)) return;
 
         CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, delegate () { att.OnOut(); });
         RunnerTracker.Snapshot(true);
@@ -1102,6 +1459,7 @@ public class Defencer : PlayerRole
     public void OnIncomingThrow(Vector3 aim)
     {
         if (_hasBall) return;
+        if (_selfThrowLockout > 0f) return;
         if (FieldMetrics.FlatDistance(_my.position, aim) < FieldMetrics.M(4f))
         {
             SetState(FIELDER_STATE.RECEIVE);

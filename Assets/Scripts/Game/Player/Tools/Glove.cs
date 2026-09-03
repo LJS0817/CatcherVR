@@ -43,12 +43,16 @@ public class Glove : MonoBehaviour
             _ball = other.GetComponent<Ball>();
             
             // 플레이어가 노바운드로 잡으면 아웃 처리 (플라이 아웃 / 파울 플라이 아웃)
+            //
+            // [수정] 예전에는 아웃 카운트를 올린 뒤 PlayerOut() 이 내부에서 또 타자를 교체해
+            //        아웃이 한 번인데 타순은 두 칸 넘어가는 문제가 있었다.
+            //        아웃 기록은 RegisterBatterOut() 한 번으로 끝내고,
+            //        타자 교체는 플레이가 마무리될 때(Team.CompletePlay) 한 번만 수행한다.
             if (_ball.CanBeDirectOut() && _ball._isBattedBall)
             {
-                _ball._isBattedBall = false;
+                _ball.SetBattedBall(false);
                 _ball.IsFoul = false; // 파울 플라이 아웃이면 데드볼 처리 취소
-                CountsProvider.provider.IncreaseCount(COUNT_TYPE.E_OUT, null);
-                GamePlayerProvider.provider.PlayerOut(PLAYER_TYPE.E_PITCHER); // 현재 타자 아웃
+                if (GamePlayerProvider.provider != null) GamePlayerProvider.provider.RegisterBatterOut();
             }
             
             _ball.GrabBall(BallOffset);

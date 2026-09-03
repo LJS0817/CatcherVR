@@ -27,13 +27,28 @@ public enum BASE_TYPE
     E_HOME_BASE,
 }
 
+/// <summary>
+/// 수비 역할. 설계도 2장의 <c>FielderRole</c> 열거형에 대응한다.
+///
+///   None              → IDLE
+///   PrimaryFielder    → CHASER
+///   AssistingFielder  → ASSIST
+///   CutoffMan         → CUTOFF
+///   RelayMan          → RELAY
+///   BaseCover         → BASE_COVER
+///   Backup            → BACKUP
+///   DecoyOrObserver   → OBSERVER
+/// </summary>
 public enum DEFENSIVE_ROLE
 {
-    IDLE,
-    CHASER,      // 타구 1차 처리자
-    BACKUP,      // 백업 / 트레일
-    BASE_COVER,  // 베이스 커버
-    CUTOFF       // 중계 / 릴레이
+    IDLE,        // None : 지시 없음(원위치 대기)
+    CHASER,      // PrimaryFielder   : 타구 1차 처리자
+    ASSIST,      // AssistingFielder : 바운드/충돌 대비 근접 보조
+    BACKUP,      // Backup           : 송구/타구 후방 백업
+    BASE_COVER,  // BaseCover        : 베이스 커버
+    CUTOFF,      // CutoffMan        : 외야-홈 송구선을 자르는 중계
+    RELAY,       // RelayMan         : 깊은 외야 장거리 중계
+    OBSERVER     // DecoyOrObserver  : 제자리 주시 / 주자 견제 감시
 }
 
 public class BaseballPlayer : MonoBehaviour
@@ -232,6 +247,7 @@ public class BaseballPlayer : MonoBehaviour
         transform.position = BasePositionProvider.provider.HitterBox.position;
         transform.rotation = BasePositionProvider.provider.HitterBox.rotation;
         _initPos = transform.position;
+        HomePosition = transform.position; // 타석 위치를 리셋 기준점으로 삼도록 추가
         setSide(true);
     }
 

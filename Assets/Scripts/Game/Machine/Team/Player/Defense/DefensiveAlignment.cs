@@ -15,6 +15,24 @@ public static class DefensiveAlignment
     public static INFIELD_DEPTH CurrentInfield { get; private set; }
     public static OUTFIELD_DEPTH CurrentOutfield { get; private set; }
 
+    /// <summary>
+    /// 설계도 4.4 / 13.1 의 <c>DefensiveShiftType</c> 로 본 현재 포메이션.
+    /// 내야 뎁스를 우선하고, 내야가 표준일 때 외야의 노-다블 여부를 반영한다.
+    /// </summary>
+    public static DefensiveShiftType ActiveShift
+    {
+        get
+        {
+            switch (CurrentInfield)
+            {
+                case INFIELD_DEPTH.IN: return DefensiveShiftType.InfieldIn;
+                case INFIELD_DEPTH.DOUBLE_PLAY: return DefensiveShiftType.DoublePlay;
+            }
+            if (CurrentOutfield == OUTFIELD_DEPTH.NO_DOUBLES) return DefensiveShiftType.NoDoubles;
+            return DefensiveShiftType.Standard;
+        }
+    }
+
     /// <summary>투구 전 포메이션 적용.</summary>
     public static void ApplyPrePitch(Team team)
     {
@@ -24,6 +42,9 @@ public static class DefensiveAlignment
 
         DecideDepth();
         Calibrate(team);
+
+        // 새로 정해진 포메이션을 전술 컨텍스트에 즉시 반영한다.
+        GameTacticalContext.Current(true);
 
         for (int i = 0; i < team.PlayerCount; i++)
         {
@@ -121,30 +142,34 @@ public static class DefensiveAlignment
         if (deepest > 5f)
         {
             BallAero.AutoCalibrate(deepest);
+
+            // 설계도 4.3 커버리지 스펙도 이 구장의 외야 깊이에 맞춰 환산한다.
+            float realMeters = deepest / Mathf.Max(0.0001f, FieldMetrics.Scale);
+            PositionCoverage.Calibrate(realMeters);
+
             _calibrated = true;
         }
     }
 
     /// <summary>구장 보정을 다시 계산하도록 강제(수비 위치를 바꿨을 때).</summary>
-    public static void InvalidateCalibration() { _calibrated = false; }
+    public static void InvalidateCalibration()
+    {
+        _calibrated = false;
+        PositionCoverage.InvalidateCalibration();
+    }
 
     static void DecideDepth()
     {
         CurrentInfield = INFIELD_DEPTH.NORMAL;
         CurrentOutfield = OUTFIELD_DEPTH.NORMAL;
 
-        CountsProvider cp = CountsProvider.provider;
-        int outs = cp != null ? cp.GetCount(COUNT_TYPE.E_OUT) : 0;
+        // 설계도 13.1 : 아웃카운트 · 주자 · 이닝 · 점수차를 한 곳에 모은 전술 컨텍스트를 본다.
+        GameTacticalContext ctx = GameTacticalContext.Current(true);
 
-        bool runnerOnFirst = false, runnerOnThird = false, anyRunner = false;
-        BasePositionProvider bp = BasePositionProvider.provider;
-        if (bp != null && bp.Bases != null && bp.Bases.Count >= 3)
-        {
-            runnerOnFirst = bp.GetAttckerBaseState(BASE_TYPE.E_FIRST_BASE) != '_';
-            runnerOnThird = bp.GetAttckerBaseState(BASE_TYPE.E_THIRD_BASE) != '_';
-            anyRunner = runnerOnFirst || runnerOnThird ||
-                        bp.GetAttckerBaseState(BASE_TYPE.E_SECOND_BASE) != '_';
-        }
+        int outs = ctx.OutCount;
+        bool runnerOnFirst = ctx.RunnerOnFirst;
+        bool runnerOnThird = ctx.RunnerOnThird;
+        bool anyRunner = ctx.RunnerOnFirst || ctx.RunnerOnSecond || ctx.RunnerOnThird;
 
         // 3루 주자 + 2아웃 미만 → 전진 수비(홈 승부)
         if (runnerOnThird && outs < 2)
@@ -157,8 +182,11 @@ public static class DefensiveAlignment
             CurrentInfield = INFIELD_DEPTH.DOUBLE_PLAY;
         }
 
+        // 설계도 4.4-4 : 경기 후반 근소 리드 상황에서는 단타는 주되 장타를 막는다.
+        bool lateAndNarrowLead = ctx.Inning >= 7 && ctx.ScoreDifference > 0 && ctx.ScoreDifference <= 2;
+
         // 주자 없이 2아웃 → 장타 방지(노 다블) 수비
-        if (!anyRunner && outs >= 2)
+        if ((!anyRunner && outs >= 2) || lateAndNarrowLead)
         {
             CurrentOutfield = OUTFIELD_DEPTH.NO_DOUBLES;
         }

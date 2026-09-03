@@ -68,8 +68,14 @@ public class CountsProvider : MonoBehaviour
     {
         if (t == COUNT_TYPE.E_FOUL) return;
         _counts[(int)t] = v;
-        ClippingCount(t, e);
+
+        // [수정] 콜백을 먼저 실행한다.
+        // 예전에는 ClippingCount(3아웃 → 이닝 교체 → 타자 교체 → ResetPlay)가 먼저 돌고
+        // 그 뒤에 콜백(주자 아웃 처리 · ExitGame)이 실행되어,
+        // 새로 타석에 들어온 타자가 곧바로 비활성화되는 순서 역전이 발생했다.
         if (e != null) e();
+
+        ClippingCount(t, e);
         updateUI();
     }
 

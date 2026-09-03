@@ -36,6 +36,48 @@ public class Ball : MonoBehaviour
     /// <summary>수비수가 던진 송구인가(수비수들이 타구처럼 쫓지 않게 하는 플래그).</summary>
     public bool IsFielderThrow { get; private set; }
 
+    /// <summary>플레이어(포수)가 던진 송구인가. 빗나가면 루즈볼 수비가 발동한다.</summary>
+    public bool IsPlayerThrow { get; private set; }
+
+    /// <summary>
+    /// 배트에 맞은 뒤 지면(또는 펜스)에 한 번이라도 닿았는가.
+    /// 노바운드 포구(플라이 아웃) 판정의 유일한 근거다.
+    /// </summary>
+    public bool HasTouchedGround { get; private set; }
+
+    /// <summary>지금 공을 쥐고 있는 트랜스폼(글러브). 아무도 쥐고 있지 않으면 null.</summary>
+    public Transform Holder { get; private set; }
+
+    /// <summary>
+    /// 이 송구를 받기로 지정된 야수. AI → AI 송구에서 <b>엉뚱한 야수가 중간에 가로채는 것</b>을 막는다.
+    /// (플레이어 송구나 루즈볼은 지정 수신자가 없으므로 누구나 처리할 수 있다.)
+    /// </summary>
+    public Transform ThrowReceiver { get; private set; }
+
+    public void SetThrowReceiver(Transform t) { ThrowReceiver = t; }
+
+    /// <summary>수비 AI 팀 소속 야수가 공을 쥐고 있는가(플레이어가 쥔 것과 구분).</summary>
+    public bool HeldByFielder
+    {
+        get
+        {
+            if (Holder == null) return false;
+            return Holder.GetComponentInParent<BaseballPlayer>() != null;
+        }
+    }
+
+    /// <summary>공이 굴러가는 중인가.</summary>
+    public bool IsRolling { get { return _rolling; } }
+
+    /// <summary>
+    /// 수비 AI 가 반응해야 하는 "살아있는 공" 인가.
+    /// 타구 · 플레이어 송구 · 야수 송구는 모두 수비 대상이지만, 투구는 아니다.
+    /// </summary>
+    public bool IsLiveForDefense
+    {
+        get { return (_isBattedBall || IsPlayerThrow || IsFielderThrow) && !_rig.isKinematic; }
+    }
+
     Vector3 _lastVelocity;
     bool _rolling;
     float _trajectoryStamp;
@@ -62,6 +104,10 @@ public class Ball : MonoBehaviour
         _isSwingMiss = false;
         IsFoul = false;
         IsFielderThrow = false;
+        IsPlayerThrow = false;
+        HasTouchedGround = false;
+        Holder = null;
+        ThrowReceiver = null;
         _rolling = false;
         _contactName = "";
 
@@ -82,6 +128,10 @@ public class Ball : MonoBehaviour
         _isSwingMiss = false;
         _isBattedBall = false;
         IsFielderThrow = false;
+        IsPlayerThrow = false;
+        HasTouchedGround = false;
+        Holder = null;
+        ThrowReceiver = null;
         _rolling = false;
 
         _calc.init();
@@ -156,6 +206,16 @@ public class Ball : MonoBehaviour
             return;
         }
 
+        // ── 노바운드 여부 확정 ──
+        // 글러브 · 배트 · 다른 공과의 접촉을 제외한 모든 충돌(지면 · 펜스 · 백스톱)은
+        // "땅에 닿았다" 로 간주한다. 이 플래그만이 플라이 아웃 판정의 근거이며,
+        // 예전처럼 _contact 를 쓰면 바운드 후 콜라이더에서 벗어나는 순간 다시 false 가 되어
+        // <b>튄 공을 잡아도 플라이 아웃이 선언되는 치명적 오판정</b>이 발생했다.
+        if (!IsCatchGear(collision))
+        {
+            HasTouchedGround = true;
+        }
+
         // ── 결정론적 바운드 : 예측기와 동일한 반발/마찰 계수를 강제 적용 ──
         if ((_isBattedBall || IsFielderThrow) && IsGroundLike(collision))
         {
@@ -178,6 +238,17 @@ public class Ball : MonoBehaviour
                 _rig.linearVelocity *= -0.0001f;
             }
         }
+    }
+
+    /// <summary>포구 장비(글러브 / 배트 / 다른 공)와의 접촉인가 — 낙구로 보지 않는다.</summary>
+    static bool IsCatchGear(Collision c)
+    {
+        if (c == null || c.transform == null) return false;
+        string tag = c.transform.tag;
+        if (tag == "Glove" || tag == "Ball" || tag == "Bat" || tag == "Player") return true;
+
+        string n = c.transform.name.ToLower();
+        return n.Contains("glove") || n.Contains("bat") || n.Contains("hand");
     }
 
     static bool IsGroundLike(Collision c)
@@ -246,11 +317,16 @@ public class Ball : MonoBehaviour
     public void GrabBall(Transform parent)
     {
         ResetVelocity();
+        if (_calc != null) _calc.Clear(Line);
         changeState(true, parent);
         transform.localPosition = Vector3.zero;
         IsFoul = false;
         _isBattedBall = false;
         IsFielderThrow = false;
+        IsPlayerThrow = false;
+        HasTouchedGround = false;
+        Holder = parent;
+        ThrowReceiver = null;
         _rolling = false;
         _contact = false;
     }
@@ -266,11 +342,23 @@ public class Ball : MonoBehaviour
         }
     }
 
-    public bool CanBeDirectOut() { return !_contact; }
+    /// <summary>
+    /// 노바운드 포구(플라이 아웃)로 인정할 수 있는 상태인가.
+    /// 배트에 맞은 뒤 지면 · 펜스에 한 번도 닿지 않았을 때만 true.
+    /// </summary>
+    public bool CanBeDirectOut() { return !HasTouchedGround; }
 
     public void ThrowBallByPlayer()
     {
         _playerThrows = true;
+        IsPlayerThrow = true;
+        IsFielderThrow = false;
+        _isBattedBall = false;
+        HasTouchedGround = false;
+        Holder = null;
+        ThrowReceiver = null;
+        _rolling = false;
+        _contact = false;
     }
 
     /// <summary>
@@ -291,6 +379,10 @@ public class Ball : MonoBehaviour
         _rolling = false;
         _contact = false;
         IsFielderThrow = true;
+        IsPlayerThrow = false;
+        HasTouchedGround = false;
+        Holder = null;
+        ThrowReceiver = null;
 
         changeState(false, _ballPool);
         transform.localScale = _initScale;
@@ -366,6 +458,10 @@ public class Ball : MonoBehaviour
         _aiThrows = true;
         _isBattedBall = false;
         IsFielderThrow = false;
+        IsPlayerThrow = false;
+        HasTouchedGround = false;
+        Holder = null;
+        ThrowReceiver = null;
         _rolling = false;
         LostBall();
     }
@@ -418,8 +514,22 @@ public class Ball : MonoBehaviour
         if (isBatted)
         {
             IsFielderThrow = false;
+            IsPlayerThrow = false;
+            HasTouchedGround = false;   // 새 타구 — 노바운드 상태로 리셋
+            Holder = null;
+            ThrowReceiver = null;
             _rolling = false;
         }
+    }
+
+    /// <summary>
+    /// 페일세이프 : 물리 이상이나 실책 연쇄로 플레이가 끝나지 않을 때
+    /// 공을 즉시 투수의 글러브로 회수한다(설계도 12.4).
+    /// </summary>
+    public void ForceReturnTo(Transform holder)
+    {
+        if (holder == null) return;
+        GrabBall(holder);
     }
 
     public string GetContactName() { return _contactName; }

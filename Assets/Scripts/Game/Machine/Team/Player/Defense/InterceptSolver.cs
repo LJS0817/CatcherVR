@@ -217,8 +217,9 @@ public static class InterceptSolver
                 foundAny = true;
             }
 
-            // 땅볼 처리: 가장 이른 차단 지점을 찾으면 그걸로 확정
-            if (!preferAir && !isAir)
+            // 땅볼 처리: 공이 땅에 닿은 후라면(바운드), 무조건 가장 이른 차단 지점을 확정하여 앞으로 대시하게 만든다.
+            // (preferAir가 true인 외야수라도, 공이 이미 바운드되었다면 뒤에서 기다리지 않고 즉시 쇄도해야 함)
+            if (!isAir)
             {
                 best.PursuitPoint = new Vector3(p.Position.x, groundY, p.Position.z);
                 return best;
